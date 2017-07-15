@@ -12,7 +12,7 @@ import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
 import teras.utils
 
-from model import BaselineParser, DatasetProcessor, compute_accuracy, compute_cross_entropy
+from model import BiaffineParser, DataLoader, compute_accuracy, compute_cross_entropy
 from utils import DEVELOP
 
 
@@ -37,14 +37,16 @@ def train(
     # Load files
     Log.i('initialize DatasetProcessor with embed_file={} and embed_size={}'
           .format(embed_file, embed_size))
-    processor = DatasetProcessor(word_embed_file=embed_file,
-                                 pos_embed_size=embed_size)
+    # processor = DataLoader(word_embed_file=embed_file,
+    #                        pos_embed_size=embed_size)
+    processor = DataLoader(word_embed_file=None,
+                           pos_embed_size=embed_size)
     Log.i('load train dataset from {}'.format(train_file))
     train_dataset = processor.load(train_file, train=True)
     Log.i('load test dataset from {}'.format(test_file))
     test_dataset = processor.load(test_file, train=False)
 
-    cls = BaselineParser
+    cls = BiaffineParser
 
     Log.v('')
     Log.v("initialize ...")
@@ -63,7 +65,8 @@ def train(
 
     # Set up a neural network model
     model = cls(
-        embeddings=(processor.word_embeddings, processor.pos_embeddings),
+        embeddings=(processor.get_embeddings('word'),
+                    processor.get_embeddings('pos')),
         n_labels=39,
         # char_embeddings=(processor.char_embeddings
         #                  if model_arch == 7 else None),
@@ -71,7 +74,7 @@ def train(
         lstm_hidden_size=lstm_hidden_size,
         use_gru=use_gru,
         # n_mlp_layers=2,
-        dropout=dropout_ratio,
+        # dropout=dropout_ratio,
     )
     if gpu >= 0:
         chainer.cuda.get_device_from_id(gpu).use()
