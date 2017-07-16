@@ -4,6 +4,7 @@
 import os
 
 import chainer
+import numpy as np
 from teras.app import App, arg
 from teras.framework.chainer import (
     config as chainer_config,
@@ -12,7 +13,7 @@ import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
 import teras.utils
 
-from model import BiaffineParser, DataLoader, compute_accuracy, compute_cross_entropy
+from model import DeepBiaffine, BiaffineParser, DataLoader, compute_accuracy, compute_cross_entropy
 from utils import DEVELOP
 
 
@@ -46,7 +47,7 @@ def train(
     Log.i('load test dataset from {}'.format(test_file))
     test_dataset = processor.load(test_file, train=False)
 
-    cls = BiaffineParser
+    cls = DeepBiaffine
 
     Log.v('')
     Log.v("initialize ...")
@@ -67,7 +68,7 @@ def train(
     model = cls(
         embeddings=(processor.get_embeddings('word'),
                     processor.get_embeddings('pos')),
-        n_labels=39,
+        n_labels=len(processor.label_map),
         # char_embeddings=(processor.char_embeddings
         #                  if model_arch == 7 else None),
         n_blstm_layers=3,
@@ -79,6 +80,14 @@ def train(
     if gpu >= 0:
         chainer.cuda.get_device_from_id(gpu).use()
         model.to_gpu()
+
+    # def convert(x):
+    #     if isinstance(x, np.ndarray):
+    #         return x.T
+    #     # print(type(x), x)
+    #     return x
+    #
+    # chainer_config['converter'] = convert
     chainer_debug(App.debug or DEVELOP)
 
     # loss_func = select_loss_func(loss_func)
@@ -97,7 +106,9 @@ def train(
     accessid = Log.getLogger().accessid
     date = Log.getLogger().accesstime.strftime('%Y%m%d')
 
-    trainer = Trainer(optimizer, model, loss_func=compute_cross_entropy,
+    parser = BiaffineParser(model)
+
+    trainer = Trainer(optimizer, parser, loss_func=compute_cross_entropy,
                       accuracy_func=compute_accuracy)
     trainer.configure(chainer_config)
     # trainer.attach_callback(Evaluator())
