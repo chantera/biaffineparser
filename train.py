@@ -13,22 +13,18 @@ from teras.training import Trainer, TrainEvent as Event
 import teras.utils
 
 from model import DeepBiaffine, BiaffineParser, DataLoader
-from utils import DEVELOP
 
 
 def train(
         train_file,
         test_file,
-        embed_file=None,
+        embed_file,
+        embed_size=50,
         n_epoch=20,
         batch_size=20,
         lr=0.001,
         reg_lambda=0.0001,
-        embed_size=50,
-        model_arch=2,
-        lstm_hidden_size=600,
-        use_gru=False,
-        dropout_ratio=0.50,
+        model_params={},
         gpu=-1,
         save_to=None):
     context = locals()
@@ -36,9 +32,7 @@ def train(
     # Load files
     Log.i('initialize DatasetProcessor with embed_file={} and embed_size={}'
           .format(embed_file, embed_size))
-    # processor = DataLoader(word_embed_file=embed_file,
-    #                        pos_embed_size=embed_size)
-    processor = DataLoader(word_embed_file=None,
+    processor = DataLoader(word_embed_file=embed_file,
                            pos_embed_size=embed_size)
     Log.i('load train dataset from {}'.format(train_file))
     train_dataset = processor.load(train_file, train=True)
@@ -54,11 +48,7 @@ def train(
     Log.i('# epoch: {}'.format(n_epoch))
     Log.i('# gpu: {}'.format(gpu))
     Log.i('# model: {}'.format(cls))
-    Log.i('# embed size: {}'.format(embed_size))
-    Log.i('# n blstm layers: {}'.format(3))
-    Log.i('# lstm hidden size: {}'.format(lstm_hidden_size))
-    Log.i('# n mlp layers: {}'.format(2))
-    Log.i('# dropout ratio: {:.4f}'.format(dropout_ratio))
+    Log.i('# model params: {}'.format(model_params))
     Log.v('--------------------------------')
     Log.v('')
 
@@ -67,19 +57,13 @@ def train(
         embeddings=(processor.get_embeddings('word'),
                     processor.get_embeddings('pos')),
         n_labels=len(processor.label_map),
-        # char_embeddings=(processor.char_embeddings
-        #                  if model_arch == 7 else None),
-        n_blstm_layers=3,
-        lstm_hidden_size=lstm_hidden_size,
-        use_gru=use_gru,
-        # n_mlp_layers=2,
-        # dropout=dropout_ratio,
+        **model_params,
     )
     if gpu >= 0:
         chainer.cuda.get_device_from_id(gpu).use()
         model.to_gpu()
 
-    chainer_debug(App.debug or DEVELOP)
+    chainer_debug(App.debug)
 
     # Setup an optimizer
     optimizer = chainer.optimizers.Adam(
@@ -131,18 +115,15 @@ def train(
 
 if __name__ == "__main__":
     corpus = '/Users/hiroki/Desktop/NLP/data/ptb-sd3.3.0/dep/'
-    datadir = App.basedir + '/../data/'
-    _default_train_file = corpus + \
-        ('wsj_02-21.conll' if not DEVELOP else 'wsj_02.conll')
+    # datadir = App.basedir + '/../data/'
+    datadir = '/Users/hiroki/Desktop/coord/data/'
+    _default_train_file = corpus + 'wsj_02-21.conll'
     _default_valid_file = corpus + 'wsj_22.conll'
     _default_embed_file = datadir + 'ptb.200.vec'
     App.add_command('train', train, {
         'batch_size':
         arg('--batchsize', '-b', type=int, default=20,
             help='Number of examples in each mini-batch'),
-        'dropout_ratio':
-        arg('--dropout', '-dr', type=float, default=0.50,
-            help='dropout ratio', metavar='RATIO'),
         'embed_file':
         arg('--embedfile', type=str, default=_default_embed_file,
             help='Pretrained word embedding file'),
@@ -155,12 +136,9 @@ if __name__ == "__main__":
         'lr':
         arg('--lr', type=float, default=0.001,
             help='Learning Rate'),
-        'lstm_hidden_size':
-        arg('--lstmsize', type=int, default=600,
-            help='Size of LSTM hidden vector'),
-        'model_arch':
-        arg('--model', '-m', type=int, default=2,
-            help='Model Architecture'),
+        'model_params':
+        arg('--model', action='store_dict', default={},
+            help='Model hyperparameter'),
         'n_epoch':
         arg('--epoch', '-e', type=int, default=20,
             help='Number of sweeps over the dataset to train'),
@@ -176,8 +154,5 @@ if __name__ == "__main__":
         'train_file':
         arg('--trainfile', type=str, default=_default_train_file,
             help='training data file'),
-        'use_gru':
-        arg('--gru', action='store_true', default=False,
-            help='use GRU as LSTM'),
     })
     App.run()
