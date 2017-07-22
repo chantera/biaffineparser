@@ -4,7 +4,6 @@
 import os
 
 import chainer
-import numpy as np
 from teras.app import App, arg
 from teras.framework.chainer import (
     config as chainer_config,
@@ -13,7 +12,7 @@ import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
 import teras.utils
 
-from model import DeepBiaffine, BiaffineParser, DataLoader, compute_accuracy, compute_cross_entropy
+from model import DeepBiaffine, BiaffineParser, DataLoader
 from utils import DEVELOP
 
 
@@ -25,7 +24,6 @@ def train(
         batch_size=20,
         lr=0.001,
         reg_lambda=0.0001,
-        loss_func='cross_entropy',
         embed_size=50,
         model_arch=2,
         lstm_hidden_size=600,
@@ -81,17 +79,7 @@ def train(
         chainer.cuda.get_device_from_id(gpu).use()
         model.to_gpu()
 
-    # def convert(x):
-    #     if isinstance(x, np.ndarray):
-    #         return x.T
-    #     # print(type(x), x)
-    #     return x
-    #
-    # chainer_config['converter'] = convert
     chainer_debug(App.debug or DEVELOP)
-
-    # loss_func = select_loss_func(loss_func)
-    Log.i('loss function: {}'.format(loss_func))
 
     # Setup an optimizer
     optimizer = chainer.optimizers.Adam(
@@ -103,17 +91,17 @@ def train(
           .format(lr, reg_lambda))
 
     # Setup a trainer
-    accessid = Log.getLogger().accessid
-    date = Log.getLogger().accesstime.strftime('%Y%m%d')
-
     parser = BiaffineParser(model)
 
-    trainer = Trainer(optimizer, parser, loss_func=compute_cross_entropy,
-                      accuracy_func=compute_accuracy)
+    trainer = Trainer(optimizer, parser, loss_func=parser.compute_loss,
+                      accuracy_func=parser.compute_accuracy)
     trainer.configure(chainer_config)
     # trainer.attach_callback(Evaluator())
 
     if save_to is not None:
+        accessid = Log.getLogger().accessid
+        date = Log.getLogger().accesstime.strftime('%Y%m%d')
+
         def _save(data):
             epoch = data['epoch']
             model_file = os.path.join(save_to, "{}-{}.{}.npz"
@@ -164,10 +152,6 @@ if __name__ == "__main__":
         'gpu':
         arg('--gpu', '-g', type=int, default=-1,
             help='GPU ID (negative value indicates CPU)'),
-        'loss_func':
-        arg('--lossfun', type=str, default='cross_entropy',
-            choices=('cross_entropy', 'hinge', 'squared_hinge'),
-            help='Loss function'),
         'lr':
         arg('--lr', type=float, default=0.001,
             help='Learning Rate'),
