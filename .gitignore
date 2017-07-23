@@ -95,5 +95,7 @@ ENV/
 ###
 
 .DS_Store
+*.npz
+*.context
 logs/*
 !.gitkeep

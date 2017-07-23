@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -6,6 +6,7 @@ import os
 import chainer
 from teras.app import App, arg
 from teras.framework.chainer import (
+    chainer_train_off,
     config as chainer_config,
     set_debug as chainer_debug)
 import teras.logging as Log
@@ -98,12 +99,7 @@ def train(
                                       .format(date, accessid, epoch))
             Log.i("saving the model to {} ...".format(model_file))
             chainer.serializers.save_npz(model_file, model)
-        context['n_blstm_layers'] = 3
-        context['n_mlp_layers'] = 2
-        context['word_vocab_size'] = loader.word_embeddings.shape[0]
-        context['word_embed_size'] = loader.word_embeddings.shape[1]
-        context['pos_vocab_size'] = loader.pos_embeddings.shape[0]
-        context['char_vocab_size'] = loader.char_embeddings.shape[0]
+        context['model_cls'] = model_cls
         context['loader'] = loader
         context_file = os.path.join(save_to, "{}-{}.context"
                                     .format(date, accessid))
@@ -119,6 +115,66 @@ def train(
                 verbose=App.verbose)
 
 
+def test(
+        model_file,
+        target_file,
+        printout=False,
+        gpu=-1):
+
+    # Load context
+    context = teras.utils.load_context(model_file)
+
+    # Load files
+    Log.i('load dataset from {}'.format(target_file))
+    dataset = context.loader.load(target_file, train=False)
+
+    Log.v('')
+    Log.v("initialize ...")
+    Log.v('--------------------------------')
+    Log.i('# gpu: {}'.format(gpu))
+    Log.i('# model: {}'.format(context.model_cls))
+    Log.i('# context: {}'.format(context))
+    Log.v('--------------------------------')
+    Log.v('')
+
+    # Set up a neural network model
+    model = context.model_cls(
+        embeddings=(context.loader.get_embeddings('word'),
+                    context.loader.get_embeddings('pos')),
+        n_labels=len(context.loader.label_map),
+        **context.model_params,
+    )
+    chainer.serializers.load_npz(model_file, model)
+    if gpu >= 0:
+        chainer.cuda.get_device_from_id(gpu).use()
+        model.to_gpu()
+
+    chainer_debug(App.debug)
+
+    parser = BiaffineParser(model)
+    evaluator = \
+        Evaluator(parser,
+                  pos_map=context.loader.get_processor('pos').vocabulary,
+                  ignore_punct=True)
+
+    # Start testing
+    chainer_train_off()
+    UAS, LAS, count = 0, 0, 0
+    for batch_index, batch in enumerate(
+            dataset.batch(context.batch_size, shuffle=False)):
+        word_tokens, pos_tokens = batch[:-1]
+        true_arcs, true_labels = batch[-1].T
+        arcs_batch, labels_batch = parser.parse(word_tokens, pos_tokens)
+        for i, (p_arcs, p_labels, t_arcs, t_labels) in enumerate(
+                zip(arcs_batch, labels_batch, true_arcs, true_labels)):
+            mask = evaluator.create_ignore_mask(word_tokens[i], pos_tokens[i])
+            _uas, _las, _count = evaluator.evaluate(
+                p_arcs, p_labels, t_arcs, t_labels, mask)
+            UAS, LAS, count = UAS + _uas, LAS + _las, count + _count
+    Log.i("[evaluation] UAS: {:.8f}, LAS: {:.8f}"
+          .format(UAS / count * 100, LAS / count * 100))
+
+
 if __name__ == "__main__":
     corpus = '/Users/hiroki/Desktop/NLP/data/ptb-sd3.3.0/dep/'
     # datadir = App.basedir + '/../data/'
@@ -126,6 +182,7 @@ if __name__ == "__main__":
     _default_train_file = corpus + 'wsj_02-21.conll'
     _default_valid_file = corpus + 'wsj_22.conll'
     _default_embed_file = datadir + 'ptb.200.vec'
+
     App.add_command('train', train, {
         'batch_size':
         arg('--batchsize', '-b', type=int, default=32,
@@ -158,4 +215,20 @@ if __name__ == "__main__":
         arg('--trainfile', type=str, default=_default_train_file,
             help='training data file'),
     })
+
+    App.add_command('test', test, {
+        'gpu':
+        arg('--gpu', '-g', type=int, default=-1,
+            help='GPU ID (negative value indicates CPU)'),
+        'model_file':
+        arg('--modelfile', type=str, required=True,
+            help='Trained model archive file'),
+        'printout':
+        arg('--print', action='store_true', default=False,
+            help='Print decoded coordination'),
+        'target_file':
+        arg('--targetfile', type=str, required=True,
+            help='Decoding target data file'),
+    })
+
     App.run()
