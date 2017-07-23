@@ -12,7 +12,7 @@ import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
 import teras.utils
 
-from model import DeepBiaffine, BiaffineParser, DataLoader
+from model import DeepBiaffine, BiaffineParser, DataLoader, Evaluator
 
 
 def train(
@@ -29,14 +29,14 @@ def train(
     context = locals()
 
     # Load files
-    Log.i('initialize DatasetProcessor with embed_file={} and embed_size={}'
+    Log.i('initialize DataLoader with embed_file={} and embed_size={}'
           .format(embed_file, embed_size))
-    processor = DataLoader(word_embed_file=embed_file,
-                           pos_embed_size=embed_size)
+    loader = DataLoader(word_embed_file=embed_file,
+                        pos_embed_size=embed_size)
     Log.i('load train dataset from {}'.format(train_file))
-    train_dataset = processor.load(train_file, train=True)
+    train_dataset = loader.load(train_file, train=True)
     Log.i('load test dataset from {}'.format(test_file))
-    test_dataset = processor.load(test_file, train=False)
+    test_dataset = loader.load(test_file, train=False)
 
     model_cls = DeepBiaffine
 
@@ -53,9 +53,9 @@ def train(
 
     # Set up a neural network model
     model = model_cls(
-        embeddings=(processor.get_embeddings('word'),
-                    processor.get_embeddings('pos')),
-        n_labels=len(processor.label_map),
+        embeddings=(loader.get_embeddings('word'),
+                    loader.get_embeddings('pos')),
+        n_labels=len(loader.label_map),
         **model_params,
     )
     if gpu >= 0:
@@ -78,13 +78,13 @@ def train(
             (decay ** (data['epoch'] / decay_step))
 
     # Setup a trainer
-    parser = BiaffineParser(model)
+    parser = BiaffineParser(model, loader.label_map)
 
     trainer = Trainer(optimizer, parser, loss_func=parser.compute_loss,
                       accuracy_func=parser.compute_accuracy)
     trainer.configure(chainer_config)
     trainer.add_hook(Event.EPOCH_END, annealing)
-    # trainer.attach_callback(Evaluator())
+    trainer.attach_callback(Evaluator(parser))
 
     if save_to is not None:
         accessid = Log.getLogger().accessid
@@ -98,11 +98,11 @@ def train(
             chainer.serializers.save_npz(model_file, model)
         context['n_blstm_layers'] = 3
         context['n_mlp_layers'] = 2
-        context['word_vocab_size'] = processor.word_embeddings.shape[0]
-        context['word_embed_size'] = processor.word_embeddings.shape[1]
-        context['pos_vocab_size'] = processor.pos_embeddings.shape[0]
-        context['char_vocab_size'] = processor.char_embeddings.shape[0]
-        context['preprocessor'] = processor
+        context['word_vocab_size'] = loader.word_embeddings.shape[0]
+        context['word_embed_size'] = loader.word_embeddings.shape[1]
+        context['pos_vocab_size'] = loader.pos_embeddings.shape[0]
+        context['char_vocab_size'] = loader.char_embeddings.shape[0]
+        context['loader'] = loader
         context_file = os.path.join(save_to, "{}-{}.context"
                                     .format(date, accessid))
         with open(context_file, 'wb') as f:

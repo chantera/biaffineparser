@@ -1,12 +1,14 @@
 from collections import defaultdict
 import re
 
-from chainer import Chain
+from chainer import Chain, cuda
 import chainer.functions as F
 import numpy as np
+from teras.base.event import Callback
 from teras.dataset.loader import CorpusLoader
 from teras.framework.chainer.model import Biaffine, BiGRU, BiLSTM, Embed, MLP
 from teras.io.reader import ConllReader
+import teras.logging as Log
 from teras.preprocessing import text
 
 
@@ -82,19 +84,30 @@ class DeepBiaffine(Chain):
 
 class BiaffineParser(object):
 
-    def __init__(self, model):
+    def __init__(self, model, label_map):
         self.model = model
+        self.label_map = label_map
 
     def forward(self, word_tokens, pos_tokens):
         lengths = [len(tokens) for tokens in word_tokens]
         arc_logits, label_logits = self.model.forward(word_tokens, pos_tokens)
+        # cache
+        self._lengths = lengths
+        self._arc_logits = arc_logits
+        self._label_logits = label_logits
+
+        label_logits = \
+            self.extract_best_label_logits(arc_logits, label_logits, lengths)
+        return arc_logits, label_logits
+
+    def extract_best_label_logits(self, arc_logits, label_logits, lengths):
         pred_arcs = self.model.xp.argmax(arc_logits.data, axis=1)
         label_logits = F.transpose(label_logits, (0, 2, 1, 3))
         label_logits = [_logits[np.arange(_length), _arcs[:_length]]
                         for _logits, _arcs, _length
                         in zip(label_logits, pred_arcs, lengths)]
         label_logits = F.pad_sequence(label_logits)
-        return arc_logits, label_logits
+        return label_logits
 
     def compute_loss(self, y, t):
         arc_logits, label_logits = y
@@ -138,6 +151,38 @@ class BiaffineParser(object):
         accuracy = (arc_accuracy + label_accuracy) / 2
         return accuracy
 
+    def parse(self, word_tokens=None, pos_tokens=None):
+        if word_tokens is not None:
+            self.forward(word_tokens, pos_tokens)
+        ROOT = self.label_map['root']
+
+        arcs_batch, labels_batch = [], []
+        arc_logits = cuda.to_cpu(self._arc_logits.data)
+        label_logits = cuda.to_cpu(self._label_logits.data)
+
+        for arc_logit, label_logit, length in \
+                zip(arc_logits, label_logits, self._lengths):
+            arcs = mst(arc_logit[:length, :length])
+            label_scores = label_logit[np.arange(length), arcs]
+            labels = np.argmax(label_scores, axis=1)
+            labels[0] = ROOT
+            tokens = np.arange(1, length)
+            roots = np.where(labels[tokens] == ROOT)[0] + 1
+            if len(roots) < 1:
+                root_arc = np.where(arcs[tokens] == 0)[0] + 1
+                labels[root_arc] = ROOT
+            elif len(roots) > 1:
+                label_scores[roots, ROOT] = 0
+                new_labels = \
+                    np.argmax(label_scores[roots], axis=1)
+                root_arc = np.where(arcs[tokens] == 0)[0] + 1
+                labels[roots] = new_labels
+                labels[root_arc] = ROOT
+            arcs_batch.append(arcs)
+            labels_batch.append(labels)
+
+        return arcs_batch, labels_batch
+
 
 def mst(scores):
     """
@@ -146,6 +191,7 @@ def mst(scores):
     length = scores.shape[0]
     scores = scores * (1 - np.eye(length))
     heads = np.argmax(scores, axis=1)
+    heads[0] = 0
     tokens = np.arange(1, length)
     roots = np.where(heads[tokens] == 0)[0] + 1
     if len(roots) < 1:
@@ -238,7 +284,44 @@ def _find_cycle(vertices, edges):
     return [SCC for SCC in _SCCs if len(SCC) > 1]
 
 
-# class Evaluator(object):
+class Evaluator(Callback):
+
+    def __init__(self, parser, name='evaluator', **kwargs):
+        super(Evaluator, self).__init__(name, **kwargs)
+        self._parser = parser
+        self.reset()
+
+    def reset(self):
+        self.record = {'UAS': 0, 'LAS': 0, 'count': 0}
+
+    def evaluate(self, pred_arcs, pred_labels, true_arcs, true_labels):
+        count = len(true_arcs) - 1
+        match_arcs = pred_arcs[1:] == true_arcs[1:]
+        UAS = np.sum(match_arcs)
+        match_labels = pred_labels[1:] == true_labels[1:]
+        LAS = np.sum((match_arcs * match_labels))
+        return UAS, LAS, count
+
+    def report(self):
+        Log.i("[evaluation] UAS: {:.8f}, LAS: {:.8f}"
+              .format(self.record['UAS'] / self.record['count'] * 100,
+                      self.record['LAS'] / self.record['count'] * 100))
+        self.reset()
+
+    def on_batch_end(self, data):
+        if data['train']:
+            return
+        arcs_batch, labels_batch = self._parser.parse()
+        true_arcs, true_labels = data['ts'].T
+        for p_arcs, p_labels, t_arcs, t_labels in \
+                zip(arcs_batch, labels_batch, true_arcs, true_labels):
+            UAS, LAS, count = self.evaluate(p_arcs, p_labels, t_arcs, t_labels)
+            self.record['UAS'] += UAS
+            self.record['LAS'] += LAS
+            self.record['count'] += count
+
+    def on_epoch_validate_end(self, data):
+        self.report()
 
 
 class DataLoader(CorpusLoader):
