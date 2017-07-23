@@ -84,9 +84,12 @@ class DeepBiaffine(Chain):
 
 class BiaffineParser(object):
 
-    def __init__(self, model, label_map):
+    def __init__(self, model, pos_map, label_map):
         self.model = model
-        self.label_map = label_map
+        self._ROOT = label_map['root']
+        self._PUNCTS = np.array([pos_map[punct] if punct in pos_map else -2
+                                 for punct in ['``', "''", ':', ',', '.']])
+        self._IGNORE = np.concatenate((self._PUNCTS, [pos_map['root']]))
 
     def forward(self, word_tokens, pos_tokens):
         lengths = [len(tokens) for tokens in word_tokens]
@@ -95,7 +98,8 @@ class BiaffineParser(object):
         self._lengths = lengths
         self._arc_logits = arc_logits
         self._label_logits = label_logits
-
+        self._masks = [np.logical_not(np.isin(_tags, self._IGNORE))
+                       .astype(np.int32) for _tags in pos_tokens]
         label_logits = \
             self.extract_best_label_logits(arc_logits, label_logits, lengths)
         return arc_logits, label_logits
@@ -154,14 +158,15 @@ class BiaffineParser(object):
     def parse(self, word_tokens=None, pos_tokens=None):
         if word_tokens is not None:
             self.forward(word_tokens, pos_tokens)
-        ROOT = self.label_map['root']
+        ROOT = self._ROOT
 
         arcs_batch, labels_batch = [], []
         arc_logits = cuda.to_cpu(self._arc_logits.data)
         label_logits = cuda.to_cpu(self._label_logits.data)
 
         for arc_logit, label_logit, length in \
-                zip(arc_logits, label_logits, self._lengths):
+                zip(arc_logits, np.transpose(label_logits, (0, 2, 1, 3)),
+                    self._lengths):
             arcs = mst(arc_logit[:length, :length])
             label_scores = label_logit[np.arange(length), arcs]
             labels = np.argmax(label_scores, axis=1)
@@ -181,7 +186,7 @@ class BiaffineParser(object):
             arcs_batch.append(arcs)
             labels_batch.append(labels)
 
-        return arcs_batch, labels_batch
+        return arcs_batch, labels_batch, self._masks
 
 
 def mst(scores):
@@ -294,11 +299,15 @@ class Evaluator(Callback):
     def reset(self):
         self.record = {'UAS': 0, 'LAS': 0, 'count': 0}
 
-    def evaluate(self, pred_arcs, pred_labels, true_arcs, true_labels):
-        count = len(true_arcs) - 1
-        match_arcs = pred_arcs[1:] == true_arcs[1:]
+    def evaluate(self, pred_arcs, pred_labels,
+                 true_arcs, true_labels, mask=None):
+        if mask is None:
+            mask = np.ones(len(true_arcs), np.int32)
+            mask[0] = 0
+        count = np.sum(mask)
+        match_arcs = (pred_arcs == true_arcs) * mask
         UAS = np.sum(match_arcs)
-        match_labels = pred_labels[1:] == true_labels[1:]
+        match_labels = pred_labels == true_labels
         LAS = np.sum((match_arcs * match_labels))
         return UAS, LAS, count
 
@@ -311,11 +320,12 @@ class Evaluator(Callback):
     def on_batch_end(self, data):
         if data['train']:
             return
-        arcs_batch, labels_batch = self._parser.parse()
+        arcs_batch, labels_batch, masks = self._parser.parse()
         true_arcs, true_labels = data['ts'].T
-        for p_arcs, p_labels, t_arcs, t_labels in \
-                zip(arcs_batch, labels_batch, true_arcs, true_labels):
-            UAS, LAS, count = self.evaluate(p_arcs, p_labels, t_arcs, t_labels)
+        for p_arcs, p_labels, t_arcs, t_labels, mask in \
+                zip(arcs_batch, labels_batch, true_arcs, true_labels, masks):
+            UAS, LAS, count = self.evaluate(p_arcs, p_labels,
+                                            t_arcs, t_labels, mask)
             self.record['UAS'] += UAS
             self.record['LAS'] += LAS
             self.record['count'] += count

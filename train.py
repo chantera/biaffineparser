@@ -70,7 +70,7 @@ def train(
     optimizer.setup(model)
     optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
-          'beta2=0.9, eps=1e-08), grad_clip=5.0, '.format(lr))
+          'beta2=0.9, eps=1e-08), grad_clip=5.0'.format(lr))
 
     def annealing(data):
         decay, decay_step = 0.75, 5000
@@ -78,7 +78,9 @@ def train(
             (decay ** (data['epoch'] / decay_step))
 
     # Setup a trainer
-    parser = BiaffineParser(model, loader.label_map)
+    parser = BiaffineParser(model,
+                            pos_map=loader.get_processor('pos').vocabulary,
+                            label_map=loader.label_map)
 
     trainer = Trainer(optimizer, parser, loss_func=parser.compute_loss,
                       accuracy_func=parser.compute_accuracy)
