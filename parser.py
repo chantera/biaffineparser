@@ -118,7 +118,7 @@ def train(
 def test(
         model_file,
         target_file,
-        printout=False,
+        decode=False,
         gpu=-1):
 
     # Load context
@@ -126,7 +126,8 @@ def test(
 
     # Load files
     Log.i('load dataset from {}'.format(target_file))
-    dataset = context.loader.load(target_file, train=False)
+    loader = context.loader
+    dataset = loader.load(target_file, train=False)
 
     Log.v('')
     Log.v("initialize ...")
@@ -139,9 +140,9 @@ def test(
 
     # Set up a neural network model
     model = context.model_cls(
-        embeddings=(context.loader.get_embeddings('word'),
-                    context.loader.get_embeddings('pos')),
-        n_labels=len(context.loader.label_map),
+        embeddings=(loader.get_embeddings('word'),
+                    loader.get_embeddings('pos')),
+        n_labels=len(loader.label_map),
         **context.model_params,
     )
     chainer.serializers.load_npz(model_file, model)
@@ -152,14 +153,13 @@ def test(
     chainer_debug(App.debug)
 
     parser = BiaffineParser(model)
-    evaluator = \
-        Evaluator(parser,
-                  pos_map=context.loader.get_processor('pos').vocabulary,
-                  ignore_punct=True)
+    pos_map = loader.get_processor('pos').vocabulary
+    label_map = loader.label_map
+    evaluator = Evaluator(parser, pos_map, ignore_punct=True)
 
     # Start testing
     chainer_train_off()
-    UAS, LAS, count = 0, 0, 0
+    UAS, LAS, count = 0.0, 0.0, 0.0
     for batch_index, batch in enumerate(
             dataset.batch(context.batch_size, shuffle=False)):
         word_tokens, pos_tokens = batch[:-1]
@@ -170,6 +170,14 @@ def test(
             mask = evaluator.create_ignore_mask(word_tokens[i], pos_tokens[i])
             _uas, _las, _count = evaluator.evaluate(
                 p_arcs, p_labels, t_arcs, t_labels, mask)
+            if decode:
+                words = loader.get_sentence(word_tokens[i])
+                for word, pos_id, arc, label_id in zip(
+                        words[1:], pos_tokens[i][1:],
+                        p_arcs[1:], p_labels[1:]):
+                    print("\t".join([word, pos_map.lookup(pos_id),
+                                     str(arc), label_map.lookup(label_id)]))
+                print()
             UAS, LAS, count = UAS + _uas, LAS + _las, count + _count
     Log.i("[evaluation] UAS: {:.8f}, LAS: {:.8f}"
           .format(UAS / count * 100, LAS / count * 100))
@@ -217,15 +225,15 @@ if __name__ == "__main__":
     })
 
     App.add_command('test', test, {
+        'decode':
+        arg('--decode', action='store_true', default=False,
+            help='Print decoded results'),
         'gpu':
         arg('--gpu', '-g', type=int, default=-1,
             help='GPU ID (negative value indicates CPU)'),
         'model_file':
         arg('--modelfile', type=str, required=True,
             help='Trained model archive file'),
-        'printout':
-        arg('--print', action='store_true', default=False,
-            help='Print decoded coordination'),
         'target_file':
         arg('--targetfile', type=str, required=True,
             help='Decoding target data file'),

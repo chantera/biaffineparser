@@ -363,6 +363,7 @@ class DataLoader(CorpusLoader):
             'pos', embed_file=None, embed_size=pos_embed_size,
             preprocess=lambda x: x.lower())
         self.label_map = text.Vocab()
+        self._sentences = {}
 
     def map(self, item):
         # item -> (words, postags, (heads, labels))
@@ -379,6 +380,8 @@ class DataLoader(CorpusLoader):
                   self.get_processor('pos').fit_transform_one(postags),
                   (np.array(heads, dtype=np.int32),
                    np.array(labels, dtype=np.int32)))
+        sentence_id = ':'.join(str(word_id) for word_id in sample[0])
+        self._sentences[sentence_id] = words
         return sample
 
     def load(self, file, train=False, size=None):
@@ -390,3 +393,15 @@ class DataLoader(CorpusLoader):
             word_transform_one = self.get_processor('word').transform_one
         self._word_transform_one = word_transform_one
         return super(DataLoader, self).load(file, train, size)
+
+    def get_sentence(self, word_ids, default=None):
+        sentence_id = ':'.join(str(word_id) for word_id in word_ids)
+        return self._sentences.get(sentence_id, default)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_sentences'] = {}
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
