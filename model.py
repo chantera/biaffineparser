@@ -29,17 +29,16 @@ class DeepBiaffine(Chain):
                  lstm_dropout=0.33,
                  arc_mlp_dropout=0.33,
                  label_mlp_dropout=0.33):
-        embed_size = sum(embed.shape[1] for embed in embeddings)
-        if lstm_hidden_size is None:
-            lstm_hidden_size = embed_size
         super(DeepBiaffine, self).__init__()
         blstm_cls = BiGRU if use_gru else BiLSTM
         with self.init_scope():
             self.embed = Embed(*embeddings, dropout=embeddings_dropout)
+            embed_size = self.embed.size
             self.blstm = blstm_cls(
                 n_layers=n_blstm_layers,
                 in_size=embed_size,
-                out_size=lstm_hidden_size,
+                out_size=(lstm_hidden_size
+                          if lstm_hidden_size is not None else embed_size),
                 dropout=lstm_dropout
             )
             layers = [MLP.Layer(None, n_arc_mlp_units,
@@ -351,7 +350,7 @@ class DataLoader(CorpusLoader):
 
     def __init__(self,
                  word_embed_size=100,
-                 pos_embed_size=50,
+                 pos_embed_size=100,
                  word_embed_file=None,
                  word_preprocess=lambda x: re.sub(r'[0-9]', '0', x.lower()),
                  word_unknown="UNKNOWN"):
