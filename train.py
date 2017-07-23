@@ -19,11 +19,10 @@ def train(
         train_file,
         test_file,
         embed_file,
-        embed_size=50,
+        embed_size=100,
         n_epoch=20,
-        batch_size=20,
-        lr=0.001,
-        reg_lambda=0.0001,
+        batch_size=32,
+        lr=0.002,
         model_params={},
         gpu=-1,
         save_to=None):
@@ -39,7 +38,7 @@ def train(
     Log.i('load test dataset from {}'.format(test_file))
     test_dataset = processor.load(test_file, train=False)
 
-    cls = DeepBiaffine
+    model_cls = DeepBiaffine
 
     Log.v('')
     Log.v("initialize ...")
@@ -47,13 +46,13 @@ def train(
     Log.i('# Minibatch-size: {}'.format(batch_size))
     Log.i('# epoch: {}'.format(n_epoch))
     Log.i('# gpu: {}'.format(gpu))
-    Log.i('# model: {}'.format(cls))
+    Log.i('# model: {}'.format(model_cls))
     Log.i('# model params: {}'.format(model_params))
     Log.v('--------------------------------')
     Log.v('')
 
     # Set up a neural network model
-    model = cls(
+    model = model_cls(
         embeddings=(processor.get_embeddings('word'),
                     processor.get_embeddings('pos')),
         n_labels=len(processor.label_map),
@@ -67,12 +66,16 @@ def train(
 
     # Setup an optimizer
     optimizer = chainer.optimizers.Adam(
-        alpha=lr, beta1=0.9, beta2=0.999, eps=1e-08)
+        alpha=lr, beta1=0.9, beta2=0.9, eps=1e-08)
     optimizer.setup(model)
-    optimizer.add_hook(chainer.optimizer.WeightDecay(reg_lambda))
+    optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
-          'beta2=0.999, eps=1e-08), regularization: WeightDecay(lambda={})'
-          .format(lr, reg_lambda))
+          'beta2=0.9, eps=1e-08), grad_clip=5.0, '.format(lr))
+
+    def annealing(data):
+        decay, decay_step = 0.75, 5000
+        optimizer.alpha = optimizer.alpha * \
+            (decay ** (data['epoch'] / decay_step))
 
     # Setup a trainer
     parser = BiaffineParser(model)
@@ -80,6 +83,7 @@ def train(
     trainer = Trainer(optimizer, parser, loss_func=parser.compute_loss,
                       accuracy_func=parser.compute_accuracy)
     trainer.configure(chainer_config)
+    trainer.add_hook(Event.EPOCH_END, annealing)
     # trainer.attach_callback(Evaluator())
 
     if save_to is not None:
@@ -122,19 +126,19 @@ if __name__ == "__main__":
     _default_embed_file = datadir + 'ptb.200.vec'
     App.add_command('train', train, {
         'batch_size':
-        arg('--batchsize', '-b', type=int, default=20,
+        arg('--batchsize', '-b', type=int, default=32,
             help='Number of examples in each mini-batch'),
         'embed_file':
         arg('--embedfile', type=str, default=_default_embed_file,
             help='Pretrained word embedding file'),
         'embed_size':
-        arg('--embedsize', type=int, default=50,
+        arg('--embedsize', type=int, default=100,
             help='Size of embeddings'),
         'gpu':
         arg('--gpu', '-g', type=int, default=-1,
             help='GPU ID (negative value indicates CPU)'),
         'lr':
-        arg('--lr', type=float, default=0.001,
+        arg('--lr', type=float, default=0.002,
             help='Learning Rate'),
         'model_params':
         arg('--model', action='store_dict', default={},
@@ -142,9 +146,6 @@ if __name__ == "__main__":
         'n_epoch':
         arg('--epoch', '-e', type=int, default=20,
             help='Number of sweeps over the dataset to train'),
-        'reg_lambda':
-        arg('--lambda', type=float, default=0.0001,
-            help='L2 regularization rate'),
         'save_to':
         arg('--out', type=str, default=None,
             help='Save model to the specified directory'),
