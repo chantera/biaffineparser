@@ -78,15 +78,15 @@ def train(
             (decay ** (data['epoch'] / decay_step))
 
     # Setup a trainer
-    parser = BiaffineParser(model,
-                            pos_map=loader.get_processor('pos').vocabulary,
-                            label_map=loader.label_map)
+    parser = BiaffineParser(model)
 
     trainer = Trainer(optimizer, parser, loss_func=parser.compute_loss,
                       accuracy_func=parser.compute_accuracy)
     trainer.configure(chainer_config)
     trainer.add_hook(Event.EPOCH_END, annealing)
-    trainer.attach_callback(Evaluator(parser))
+    trainer.attach_callback(
+        Evaluator(parser, pos_map=loader.get_processor('pos').vocabulary,
+                  ignore_punct=True))
 
     if save_to is not None:
         accessid = Log.getLogger().accessid

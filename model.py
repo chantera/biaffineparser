@@ -84,12 +84,9 @@ class DeepBiaffine(Chain):
 
 class BiaffineParser(object):
 
-    def __init__(self, model, pos_map, label_map):
+    def __init__(self, model, root_label=0):
         self.model = model
-        self._ROOT = label_map['root']
-        self._PUNCTS = np.array([pos_map[punct] if punct in pos_map else -2
-                                 for punct in ['``', "''", ':', ',', '.']])
-        self._IGNORE = np.concatenate((self._PUNCTS, [pos_map['root']]))
+        self._ROOT_LABEL = root_label
 
     def forward(self, word_tokens, pos_tokens):
         lengths = [len(tokens) for tokens in word_tokens]
@@ -98,8 +95,7 @@ class BiaffineParser(object):
         self._lengths = lengths
         self._arc_logits = arc_logits
         self._label_logits = label_logits
-        self._masks = [np.logical_not(np.isin(_tags, self._IGNORE))
-                       .astype(np.int32) for _tags in pos_tokens]
+
         label_logits = \
             self.extract_best_label_logits(arc_logits, label_logits, lengths)
         return arc_logits, label_logits
@@ -158,8 +154,7 @@ class BiaffineParser(object):
     def parse(self, word_tokens=None, pos_tokens=None):
         if word_tokens is not None:
             self.forward(word_tokens, pos_tokens)
-        ROOT = self._ROOT
-
+        ROOT = self._ROOT_LABEL
         arcs_batch, labels_batch = [], []
         arc_logits = cuda.to_cpu(self._arc_logits.data)
         label_logits = cuda.to_cpu(self._label_logits.data)
@@ -186,7 +181,7 @@ class BiaffineParser(object):
             arcs_batch.append(arcs)
             labels_batch.append(labels)
 
-        return arcs_batch, labels_batch, self._masks
+        return arcs_batch, labels_batch
 
 
 def mst(scores):
@@ -290,20 +285,27 @@ def _find_cycle(vertices, edges):
 
 
 class Evaluator(Callback):
+    PUNCT_TAGS = ['``', "''", ':', ',', '.']
 
-    def __init__(self, parser, name='evaluator', **kwargs):
+    def __init__(self, parser, pos_map=None, ignore_punct=True,
+                 name='evaluator', **kwargs):
         super(Evaluator, self).__init__(name, **kwargs)
         self._parser = parser
+        punct_ids = [pos_map[punct] if punct in pos_map else -2 for punct
+                     in Evaluator.PUNCT_TAGS] if pos_map is not None else []
+        self._PUNCTS = np.array(punct_ids)
+        self._ignore_punct = ignore_punct
         self.reset()
 
     def reset(self):
         self.record = {'UAS': 0, 'LAS': 0, 'count': 0}
 
     def evaluate(self, pred_arcs, pred_labels,
-                 true_arcs, true_labels, mask=None):
-        if mask is None:
-            mask = np.ones(len(true_arcs), np.int32)
-            mask[0] = 0
+                 true_arcs, true_labels, ignore_mask=None):
+        if ignore_mask is None:
+            ignore_mask = np.zeros(len(true_arcs), np.int32)
+            ignore_mask[0] = 1
+        mask = 1 - ignore_mask
         count = np.sum(mask)
         match_arcs = (pred_arcs == true_arcs) * mask
         UAS = np.sum(match_arcs)
@@ -311,19 +313,29 @@ class Evaluator(Callback):
         LAS = np.sum((match_arcs * match_labels))
         return UAS, LAS, count
 
+    def create_ignore_mask(self, words, postags, ignore_punct=True):
+        if ignore_punct:
+            mask = np.isin(postags, self._PUNCTS).astype(np.int32)
+        else:
+            mask = np.zeros(len(postags), np.int32)
+        mask[0] = 1
+        return mask
+
     def report(self):
         Log.i("[evaluation] UAS: {:.8f}, LAS: {:.8f}"
               .format(self.record['UAS'] / self.record['count'] * 100,
                       self.record['LAS'] / self.record['count'] * 100))
-        self.reset()
 
     def on_batch_end(self, data):
         if data['train']:
             return
-        arcs_batch, labels_batch, masks = self._parser.parse()
+        word_tokens, pos_tokens = data['xs']
+        arcs_batch, labels_batch = self._parser.parse()
         true_arcs, true_labels = data['ts'].T
-        for p_arcs, p_labels, t_arcs, t_labels, mask in \
-                zip(arcs_batch, labels_batch, true_arcs, true_labels, masks):
+        for i, (p_arcs, p_labels, t_arcs, t_labels) in enumerate(
+                zip(arcs_batch, labels_batch, true_arcs, true_labels)):
+            mask = self.create_ignore_mask(word_tokens[i], pos_tokens[i],
+                                           self._ignore_punct)
             UAS, LAS, count = self.evaluate(p_arcs, p_labels,
                                             t_arcs, t_labels, mask)
             self.record['UAS'] += UAS
@@ -332,6 +344,7 @@ class Evaluator(Callback):
 
     def on_epoch_validate_end(self, data):
         self.report()
+        self.reset()
 
 
 class DataLoader(CorpusLoader):
