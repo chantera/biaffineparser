@@ -18,8 +18,8 @@ from model import DeepBiaffine, BiaffineParser, DataLoader, Evaluator
 
 def train(
         train_file,
-        test_file,
-        embed_file,
+        test_file=None,
+        embed_file=None,
         embed_size=100,
         n_epoch=20,
         batch_size=32,
@@ -33,11 +33,15 @@ def train(
     Log.i('initialize DataLoader with embed_file={} and embed_size={}'
           .format(embed_file, embed_size))
     loader = DataLoader(word_embed_file=embed_file,
+                        word_embed_size=embed_size,
                         pos_embed_size=embed_size)
     Log.i('load train dataset from {}'.format(train_file))
     train_dataset = loader.load(train_file, train=True)
-    Log.i('load test dataset from {}'.format(test_file))
-    test_dataset = loader.load(test_file, train=False)
+    if test_file:
+        Log.i('load test dataset from {}'.format(test_file))
+        test_dataset = loader.load(test_file, train=False)
+    else:
+        test_dataset = None
 
     model_cls = DeepBiaffine
 
@@ -85,9 +89,10 @@ def train(
                       accuracy_func=parser.compute_accuracy)
     trainer.configure(chainer_config)
     trainer.add_hook(Event.EPOCH_END, annealing)
-    trainer.attach_callback(
-        Evaluator(parser, pos_map=loader.get_processor('pos').vocabulary,
-                  ignore_punct=True))
+    if test_dataset:
+        trainer.attach_callback(
+            Evaluator(parser, pos_map=loader.get_processor('pos').vocabulary,
+                      ignore_punct=True))
 
     if save_to is not None:
         accessid = Log.getLogger().accessid
@@ -184,19 +189,14 @@ def test(
 
 
 if __name__ == "__main__":
-    corpus = '/Users/hiroki/Desktop/NLP/data/ptb-sd3.3.0/dep/'
-    # datadir = App.basedir + '/../data/'
-    datadir = '/Users/hiroki/Desktop/coord/data/'
-    _default_train_file = corpus + 'wsj_02-21.conll'
-    _default_valid_file = corpus + 'wsj_22.conll'
-    _default_embed_file = datadir + 'ptb.200.vec'
+    Log.AppLogger.configure(mkdir=True)
 
     App.add_command('train', train, {
         'batch_size':
         arg('--batchsize', '-b', type=int, default=32,
             help='Number of examples in each mini-batch'),
         'embed_file':
-        arg('--embedfile', type=str, default=_default_embed_file,
+        arg('--embedfile', type=str, default=None,
             help='Pretrained word embedding file'),
         'embed_size':
         arg('--embedsize', type=int, default=100,
@@ -217,10 +217,10 @@ if __name__ == "__main__":
         arg('--out', type=str, default=None,
             help='Save model to the specified directory'),
         'test_file':
-        arg('--validfile', type=str, default=_default_valid_file,
+        arg('--validfile', type=str, default=None,
             help='validation data file'),
         'train_file':
-        arg('--trainfile', type=str, default=_default_train_file,
+        arg('--trainfile', type=str, required=True,
             help='training data file'),
     })
 
