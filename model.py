@@ -114,6 +114,8 @@ class BiaffineParser(object):
 
         b, l1, l2 = arc_logits.shape
         true_arcs = F.pad_sequence(true_arcs, padding=-1)
+        if not self.model._cpu:
+            true_arcs.to_gpu()
         arc_loss = F.softmax_cross_entropy(
             F.reshape(arc_logits, (b * l1, l2)),
             F.reshape(true_arcs, (b * l1,)),
@@ -121,6 +123,8 @@ class BiaffineParser(object):
 
         b, l1, d = label_logits.shape
         true_labels = F.pad_sequence(true_labels, padding=-1)
+        if not self.model._cpu:
+            true_labels.to_gpu()
         label_loss = F.softmax_cross_entropy(
             F.reshape(label_logits, (b * l1, d)),
             F.reshape(true_labels, (b * l1,)),
@@ -135,6 +139,8 @@ class BiaffineParser(object):
 
         b, l1, l2 = arc_logits.shape
         true_arcs = F.pad_sequence(true_arcs, padding=-1)
+        if not self.model._cpu:
+            true_arcs.to_gpu()
         arc_accuracy = F.accuracy(
             F.reshape(arc_logits, (b * l1, l2)),
             F.reshape(true_arcs, (b * l1,)),
@@ -142,6 +148,8 @@ class BiaffineParser(object):
 
         b, l1, d = label_logits.shape
         true_labels = F.pad_sequence(true_labels, padding=-1)
+        if not self.model._cpu:
+            true_labels.to_gpu()
         label_accuracy = F.accuracy(
             F.reshape(label_logits, (b * l1, d)),
             F.reshape(true_labels, (b * l1,)),
