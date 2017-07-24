@@ -1,0 +1,3 @@
+chainer==2.0.1
+numpy>=1.13.1
+-e git+https://github.com/chantera/teras@25c350c6e4930d327723d3b45ab5ae3f703b0e80#egg=teras
