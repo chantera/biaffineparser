@@ -363,7 +363,7 @@ class DataLoader(CorpusLoader):
                  word_preprocess=lambda x: re.sub(r'[0-9]', '0', x.lower()),
                  word_unknown="UNKNOWN"):
         super(DataLoader, self).__init__(reader=ConllReader())
-        self.use_pretrained = word_embed_size is not None
+        self.use_pretrained = word_embed_file is not None
         self.add_processor(
             'word', embed_file=word_embed_file, embed_size=word_embed_size,
             preprocess=word_preprocess, unknown=word_unknown)
