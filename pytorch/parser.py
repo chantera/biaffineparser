@@ -3,7 +3,7 @@
 
 import os
 
-import chainer
+# import chainer
 from teras.app import App, arg
 # from teras.framework.chainer import (
 #     chainer_train_off,
