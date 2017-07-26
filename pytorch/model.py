@@ -1,13 +1,10 @@
 from collections import defaultdict
 import re
 
-# from chainer import Chain, cuda
-# import chainer.functions as F
 import numpy as np
 from teras.base.event import Callback
 from teras.dataset.loader import CorpusLoader
-# from teras.framework.chainer.model import Biaffine, BiGRU, BiLSTM, Embed, MLP
-from teras.framework.pytorch.model import Embed, MLP
+from teras.framework.pytorch.model import Biaffine, Embed, MLP
 from teras.io.reader import ConllReader
 import teras.logging as Log
 from teras.preprocessing import text
@@ -66,33 +63,11 @@ class DeepBiaffine(nn.Module):
                   for i in range(n_label_mlp_layers)]
         self.mlp_label_dep = MLP(layers)
         self.arc_biaffine = \
-            nn.Bilinear(n_arc_mlp_units, n_arc_mlp_units, 1, bias=True)
+            Biaffine(n_arc_mlp_units, n_arc_mlp_units, 1,
+                     bias=(True, False, False))
         self.label_biaffine = \
-            nn.Bilinear(n_label_mlp_units, n_label_mlp_units,
-                        n_labels, bias=True)
-        # nobias=(False, True, True))
-        """
-        with self.init_scope():
-            self.embed = Embed(*embeddings, dropout=embeddings_dropout)
-            embed_size = self.embed.size
-            self.blstm = blstm_cls(
-                n_layers=n_blstm_layers,
-                in_size=embed_size,
-                out_size=(lstm_hidden_size
-                          if lstm_hidden_size is not None else embed_size),
-                dropout=lstm_dropout
-            )
-            layers = [MLP.Layer(None, n_arc_mlp_units,
-                                mlp_activation, arc_mlp_dropout)
-                      for i in range(n_arc_mlp_layers)]
-            self.mlp_arc_head = MLP(layers)
-            self.arc_biaffine = \
-                Biaffine(n_arc_mlp_units, n_arc_mlp_units, 1,
-                         nobias=(False, True, True))
-            self.label_biaffine = \
-                Biaffine(n_label_mlp_units, n_label_mlp_units, n_labels,
-                         nobias=(False, False, False))
-        """
+            Biaffine(n_label_mlp_units, n_label_mlp_units, n_labels,
+                     bias=(True, True, True))
 
     def forward(self, word_tokens, pos_tokens):
         lengths = np.array([len(tokens) for tokens in word_tokens])
@@ -111,9 +86,7 @@ class DeepBiaffine(nn.Module):
         R = nn.utils.rnn.pad_packed_sequence(R, batch_first=True)[0]
         H_arc_head = self.mlp_arc_head(R)
         H_arc_dep = self.mlp_arc_dep(R)
-        print(H_arc_dep.size())
         arc_logits = self.arc_biaffine(H_arc_dep, H_arc_head)
-        print(arc_logits.size())
         arc_logits = torch.squeeze(arc_logits, dim=3)
         H_label_dep = self.mlp_label_dep(R)
         H_label_head = self.mlp_label_head(R)
