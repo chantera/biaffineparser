@@ -124,7 +124,7 @@ class BiaffineParser(object):
 
     def extract_best_label_logits(self, arc_logits, label_logits, lengths):
         pred_arcs = torch.squeeze(
-            torch.max(arc_logits, dim=1)[1], dim=1).data.numpy()
+            torch.max(arc_logits, dim=1)[1], dim=1).data.cpu().numpy()
         label_logits = torch.transpose(label_logits, 1, 2)
         size = label_logits.size()
         output_logits = torch.autograd.Variable(
@@ -164,13 +164,15 @@ class BiaffineParser(object):
         pred_arcs = arc_logits.data.max(2)[1]
         true_arcs = pad_sequence(true_arcs, padding=-1, dtype=np.int64)
         correct = pred_arcs.eq(true_arcs).cpu().sum()
-        arc_accuracy = correct / (b * l1 - np.sum(true_arcs.numpy() == -1))
+        arc_accuracy = (correct /
+                        (b * l1 - np.sum(true_arcs.cpu().numpy() == -1)))
 
         b, l1, d = label_logits.size()
         pred_labels = label_logits.data.max(2)[1]
         true_labels = pad_sequence(true_labels, padding=-1, dtype=np.int64)
         correct = pred_labels.eq(true_labels).cpu().sum()
-        label_accuracy = correct / (b * l1 - np.sum(true_labels.numpy() == -1))
+        label_accuracy = (correct /
+                          (b * l1 - np.sum(true_labels.cpu().numpy() == -1)))
 
         accuracy = (arc_accuracy + label_accuracy) / 2
         return accuracy
@@ -180,8 +182,8 @@ class BiaffineParser(object):
             self.forward(word_tokens, pos_tokens)
         ROOT = self._ROOT_LABEL
         arcs_batch, labels_batch = [], []
-        arc_logits = self._arc_logits.data.numpy()
-        label_logits = self._label_logits.data.numpy()
+        arc_logits = self._arc_logits.data.cpu().numpy()
+        label_logits = self._label_logits.data.cpu().numpy()
 
         for arc_logit, label_logit, length in \
                 zip(arc_logits, np.transpose(label_logits, (0, 2, 1, 3)),
