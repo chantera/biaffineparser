@@ -78,12 +78,14 @@ class DeepBiaffine(nn.Module):
                              mode="constant", constant_values=self._pad_id)
                       for tags, length in zip(pos_tokens, lengths)]
         X = self.embed(word_tokens, pos_tokens)
-        indices = np.argsort(-np.array(lengths)).astype('i')
+        indices = np.argsort(-np.array(lengths)).astype(np.int64)
         lengths = lengths[indices]
         X = torch.stack([X[idx] for idx in indices])
         X = nn.utils.rnn.pack_padded_sequence(X, lengths, batch_first=True)
         R = self.blstm(X)[0]
         R = nn.utils.rnn.pad_packed_sequence(R, batch_first=True)[0]
+        R = R.index_select(dim=0, index=_model_var(
+            self, torch.from_numpy(np.argsort(indices).astype(np.int64))))
         H_arc_head = self.mlp_arc_head(R)
         H_arc_dep = self.mlp_arc_dep(R)
         arc_logits = self.arc_biaffine(H_arc_dep, H_arc_head)

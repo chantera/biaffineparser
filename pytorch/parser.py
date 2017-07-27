@@ -65,11 +65,8 @@ def train(
         n_labels=len(loader.label_map),
         **model_params,
     )
-    # if gpu >= 0:
-    #     chainer.cuda.get_device_from_id(gpu).use()
-    #     model.to_gpu()
-    #
-    # chainer_debug(App.debug)
+    if gpu >= 0:
+        model.cuda(gpu)
 
     # Setup an optimizer
     optimizer = torch.optim.Adam(model.parameters(),
