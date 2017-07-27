@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
-
 from teras.app import App, arg
 import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
@@ -23,8 +21,6 @@ def train(
         gpu=-1,
         save_to=None,
         backend='chainer'):
-    context = locals()
-    print(App.context)
     if backend == 'chainer':
         import chainer
         import chainer_model as models
@@ -118,28 +114,12 @@ def train(
     if save_to is not None:
         accessid = Log.getLogger().accessid
         date = Log.getLogger().accesstime.strftime('%Y%m%d')
-
-        if backend == 'chainer':
-            def _save(data):
-                epoch = data['epoch']
-                model_file = os.path.join(save_to, "{}-{}.{}.npz"
-                                          .format(date, accessid, epoch))
-                Log.i("saving the model to {} ...".format(model_file))
-                chainer.serializers.save_npz(model_file, model)
-        elif backend == 'pytorch':
-            def _save(data):
-                epoch = data['epoch']
-                model_file = os.path.join(save_to, "{}-{}.{}.mdl"
-                                          .format(date, accessid, epoch))
-                Log.i("saving the model to {} ...".format(model_file))
-                torch.save(model.state_dict(), model_file)
-        context['model_cls'] = model_cls
-        context['loader'] = loader
-        context_file = os.path.join(save_to, "{}-{}.context"
-                                    .format(date, accessid))
-        with open(context_file, 'wb') as f:
-            teras.utils.dump(context, f)
-        trainer.add_hook(Event.EPOCH_END, _save)
+        trainer.attach_callback(
+            framework_utils.callbacks.Saver(
+                model,
+                basename="{}-{}".format(date, accessid),
+                directory=save_to,
+                context=dict(App.context, model_cls=model_cls, loader=loader)))
 
     # Start training
     trainer.fit(train_dataset, None,
