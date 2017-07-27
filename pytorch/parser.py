@@ -96,10 +96,10 @@ def train(
 
         def _save(data):
             epoch = data['epoch']
-            model_file = os.path.join(save_to, "{}-{}.{}.npz"
+            model_file = os.path.join(save_to, "{}-{}.{}.mdl"
                                       .format(date, accessid, epoch))
             Log.i("saving the model to {} ...".format(model_file))
-            chainer.serializers.save_npz(model_file, model)
+            torch.save(model.state_dict(), model_file)
         context['model_cls'] = model_cls
         context['loader'] = loader
         context_file = os.path.join(save_to, "{}-{}.context"
@@ -146,12 +146,9 @@ def test(
         n_labels=len(loader.label_map),
         **context.model_params,
     )
-    chainer.serializers.load_npz(model_file, model)
+    model.load_state_dict(torch.load(model_file))
     if gpu >= 0:
-        chainer.cuda.get_device_from_id(gpu).use()
-        model.to_gpu()
-
-    # chainer_debug(App.debug)
+        model.cuda(gpu)
 
     parser = BiaffineParser(model)
     pos_map = loader.get_processor('pos').vocabulary
@@ -159,7 +156,7 @@ def test(
     evaluator = Evaluator(parser, pos_map, ignore_punct=True)
 
     # Start testing
-    # chainer_train_off()
+    model.eval()
     UAS, LAS, count = 0.0, 0.0, 0.0
     for batch_index, batch in enumerate(
             dataset.batch(context.batch_size, shuffle=False)):
