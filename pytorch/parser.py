@@ -3,12 +3,7 @@
 
 import os
 
-# import chainer
 from teras.app import App, arg
-# from teras.framework.chainer import (
-#     chainer_train_off,
-#     config as chainer_config,
-#     set_debug as chainer_debug)
 from teras.framework.pytorch import config as pytorch_config
 import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
@@ -71,16 +66,15 @@ def train(
     # Setup an optimizer
     optimizer = torch.optim.Adam(model.parameters(),
                                  lr=lr, betas=(0.9, 0.9), eps=1e-08)
-    # optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
-    # Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
-    #       'beta2=0.9, eps=1e-08), grad_clip=5.0'.format(lr))
+    torch.nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
-          'beta2=0.9, eps=1e-08)'.format(lr))
+          'beta2=0.9, eps=1e-08), grad_clip=5.0'.format(lr))
 
-    # def annealing(data):
-    #     decay, decay_step = 0.75, 5000
-    #     optimizer.alpha = optimizer.alpha * \
-    #         (decay ** (data['epoch'] / decay_step))
+    def annealing(data):
+        decay, decay_step = 0.75, 5000
+        decay_rate = decay ** (data['epoch'] / decay_step)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] *= decay_rate
 
     # Setup a trainer
     parser = BiaffineParser(model)
@@ -90,7 +84,7 @@ def train(
     trainer.configure(pytorch_config)
     trainer.add_hook(Event.EPOCH_TRAIN_BEGIN, lambda data: model.train())
     trainer.add_hook(Event.EPOCH_VALIDATE_BEGIN, lambda data: model.eval())
-    # trainer.add_hook(Event.EPOCH_END, annealing)
+    trainer.add_hook(Event.EPOCH_END, annealing)
     if test_dataset:
         trainer.attach_callback(
             Evaluator(parser, pos_map=loader.get_processor('pos').vocabulary,
