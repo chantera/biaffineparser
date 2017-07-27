@@ -218,7 +218,8 @@ if __name__ == "__main__":
 
     App.add_command('train', train, {
         'backend':
-        arg('--backend', type=str, default='chainer',
+        arg('--backend', type=str,
+            choices=('chainer', 'pytorch'), default='chainer',
             help='Backend framework for computation'),
         'batch_size':
         arg('--batchsize', '-b', type=int, default=32,

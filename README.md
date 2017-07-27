@@ -1,6 +1,6 @@
 # biaffineparser: Deep Biaffine Attention Dependency Parser
 
-biaffineparser is chainer implementation for Deep Biaffine Attention for Neural Dependency Parsing.
+biaffineparser is chainer/pytorch implementation for Deep Biaffine Attention for Neural Dependency Parsing.
 
 ## Installation
 
@@ -12,18 +12,24 @@ $ cd biaffineparser
 $ pip install -r requirements.txt
 ```
 
+For backend computation with pytorch, you need to install pytorch from source.  
+See <https://github.com/pytorch/pytorch#from-source>.
+
 ## Usage
 
 ### Training
 
 ```sh
-usage: parser.py train [-h] [--batchsize BATCH_SIZE] [--embedfile EMBED_FILE]
+usage: parser.py train [-h] [--backend {chainer,pytorch}]
+                       [--batchsize BATCH_SIZE] [--embedfile EMBED_FILE]
                        [--embedsize EMBED_SIZE] [--epoch N_EPOCH] [--gpu GPU]
                        [--lr LR] [--model MODEL_PARAMS] [--out SAVE_TO]
                        --trainfile TRAIN_FILE [--validfile TEST_FILE]
 
 optional arguments:
   -h, --help            show this help message and exit
+  --backend {chainer,pytorch}
+                        Backend framework for computation (default: chainer)
   --batchsize BATCH_SIZE, -b BATCH_SIZE
                         Number of examples in each mini-batch (default: 32)
   --embedfile EMBED_FILE
