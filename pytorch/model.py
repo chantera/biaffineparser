@@ -125,46 +125,15 @@ class BiaffineParser(object):
     def extract_best_label_logits(self, arc_logits, label_logits, lengths):
         pred_arcs = torch.squeeze(
             torch.max(arc_logits, dim=1)[1], dim=1).data.numpy()
-        # print(label_logits.size())
         label_logits = torch.transpose(label_logits, 1, 2)
-        # label_logits = torch.transpose(
-        #     torch.transpose(label_logits, 1, 2), 2, 3)
-        # output_logits = torch.autograd.Variable(
-        #     torch.zeros(label_logits.size()[:3]))
         size = label_logits.size()
         output_logits = torch.autograd.Variable(
             torch.zeros(size[0], size[2], size[3]))
-        # print(output_logits.size())
         for batch_index, (_logits, _arcs, _length) \
                 in enumerate(zip(label_logits, pred_arcs, lengths)):
-            # print(_logits.size(), _arcs.shape)
-            # print(_arcs[:_length])
             for i in range(_length):
-                # print(_logits[_arcs[j]].size())
-                # pass
-                # print(output_logits[i].size())
-                # print(_logits.size())
                 output_logits[batch_index] = _logits[_arcs[i]]
-                # print(_logits[_arcs[j]].size())
-                # output_logits[i][j] = _logits[j, _arcs[j]]
-            # for _logit, _arc in
-            # l = torch.index_select(_logits, dim=1, index=_arcs)
-            # print(l)
-            # mask = np.zeros(_logits.size())
-            # mask[np.arange(_length), _arcs[:_length]]
-            # print(mask)
-            # print(_arcs)
-            # print(_arcs[:_length])
-            # print(_logits.size())
-            # print(_logits[np.arange(_length)])
-        # print(output_logits.size())
         return output_logits
-        # print(label_logits.size())
-        # label_logits = [_logits[np.arange(_length), _arcs[:_length]]
-        #                 for _logits, _arcs, _length
-        #                 in zip(label_logits, pred_arcs, lengths)]
-        # label_logits = F.pad_sequence(label_logits)
-        # return label_logits
 
     def compute_loss(self, y, t):
         arc_logits, label_logits = y
@@ -173,12 +142,6 @@ class BiaffineParser(object):
         b, l1, l2 = arc_logits.size()
         true_arcs = torch.autograd.Variable(
             pad_sequence(true_arcs, padding=-1, dtype=np.int64))
-        # word_tokens = [np.pad(words, (0, lengths.max() - length),
-        #                       mode="constant", constant_values=self._pad_id)
-        #                for words, length in zip(word_tokens, lengths)]
-        # true_arcs = F.pad_sequence(true_arcs, padding=-1)
-        # if not self.model._cpu:
-        #     true_arcs.to_gpu()
         arc_loss = F.cross_entropy(
             arc_logits.view(b * l1, l2), true_arcs.view(b * l1),
             ignore_index=-1)
@@ -186,9 +149,6 @@ class BiaffineParser(object):
         b, l1, d = label_logits.size()
         true_labels = torch.autograd.Variable(
             pad_sequence(true_labels, padding=-1, dtype=np.int64))
-        # true_labels = F.pad_sequence(true_labels, padding=-1)
-        # if not self.model._cpu:
-        #     true_labels.to_gpu()
         label_loss = F.cross_entropy(
             label_logits.view(b * l1, d), true_labels.view(b * l1),
             ignore_index=-1)
@@ -212,27 +172,6 @@ class BiaffineParser(object):
         correct = pred_labels.eq(true_labels).cpu().sum()
         label_accuracy = correct / (b * l1 - np.sum(true_labels.numpy() == -1))
 
-        # print(pred_arcs)
-        #
-        # b, l1, l2 = arc_logits.shape
-        # true_arcs = pad_sequence(true_arcs, padding=-1)
-        #
-        # if not self.model._cpu:
-        #     true_arcs.to_gpu()
-        # arc_accuracy = F.accuracy(
-        #     F.reshape(arc_logits, (b * l1, l2)),
-        #     F.reshape(true_arcs, (b * l1,)),
-        #     ignore_label=-1)
-        #
-        # b, l1, d = label_logits.shape
-        # true_labels = F.pad_sequence(true_labels, padding=-1)
-        # if not self.model._cpu:
-        #     true_labels.to_gpu()
-        # label_accuracy = F.accuracy(
-        #     F.reshape(label_logits, (b * l1, d)),
-        #     F.reshape(true_labels, (b * l1,)),
-        #     ignore_label=-1)
-
         accuracy = (arc_accuracy + label_accuracy) / 2
         return accuracy
 
@@ -241,8 +180,8 @@ class BiaffineParser(object):
             self.forward(word_tokens, pos_tokens)
         ROOT = self._ROOT_LABEL
         arcs_batch, labels_batch = [], []
-        arc_logits = cuda.to_cpu(self._arc_logits.data)
-        label_logits = cuda.to_cpu(self._label_logits.data)
+        arc_logits = self._arc_logits.data.numpy()
+        label_logits = self._label_logits.data.numpy()
 
         for arc_logit, label_logit, length in \
                 zip(arc_logits, np.transpose(label_logits, (0, 2, 1, 3)),
