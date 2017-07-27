@@ -3,17 +3,12 @@
 
 import os
 
-import chainer
 from teras.app import App, arg
-from teras.framework.chainer import (
-    chainer_train_off,
-    config as chainer_config,
-    set_debug as chainer_debug)
 import teras.logging as Log
 from teras.training import Trainer, TrainEvent as Event
 import teras.utils
 
-from model import DeepBiaffine, BiaffineParser, DataLoader, Evaluator
+import utils
 
 
 def train(
@@ -26,15 +21,29 @@ def train(
         lr=0.002,
         model_params={},
         gpu=-1,
-        save_to=None):
+        save_to=None,
+        backend='chainer'):
     context = locals()
+    print(App.context)
+    if backend == 'chainer':
+        import chainer
+        import chainer_model as models
+        import teras.framework.chainer as framework_utils
+        framework_utils.set_debug(App.debug)
+    elif backend == 'pytorch':
+        import torch
+        import pytorch_model as models
+        import teras.framework.pytorch as framework_utils
+    else:
+        raise ValueError("backend={} is not supported."
+                         .format(backend))
 
     # Load files
     Log.i('initialize DataLoader with embed_file={} and embed_size={}'
           .format(embed_file, embed_size))
-    loader = DataLoader(word_embed_file=embed_file,
-                        word_embed_size=embed_size,
-                        pos_embed_size=embed_size)
+    loader = utils.DataLoader(word_embed_file=embed_file,
+                              word_embed_size=embed_size,
+                              pos_embed_size=embed_size)
     Log.i('load train dataset from {}'.format(train_file))
     train_dataset = loader.load(train_file, train=True)
     if test_file:
@@ -43,7 +52,7 @@ def train(
     else:
         test_dataset = None
 
-    model_cls = DeepBiaffine
+    model_cls = models.DeepBiaffine
 
     Log.v('')
     Log.v("initialize ...")
@@ -64,46 +73,66 @@ def train(
         **model_params,
     )
     if gpu >= 0:
-        chainer.cuda.get_device_from_id(gpu).use()
-        model.to_gpu()
-
-    chainer_debug(App.debug)
+        framework_utils.set_model_to_device(model, device_id=gpu)
 
     # Setup an optimizer
-    optimizer = chainer.optimizers.Adam(
-        alpha=lr, beta1=0.9, beta2=0.9, eps=1e-08)
-    optimizer.setup(model)
-    optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
+    if backend == 'chainer':
+        optimizer = chainer.optimizers.Adam(
+            alpha=lr, beta1=0.9, beta2=0.9, eps=1e-08)
+        optimizer.setup(model)
+        optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
+
+        def annealing(data):
+            decay, decay_step = 0.75, 5000
+            optimizer.alpha = optimizer.alpha * \
+                (decay ** (data['epoch'] / decay_step))
+    elif backend == 'pytorch':
+        optimizer = torch.optim.Adam(model.parameters(),
+                                     lr=lr, betas=(0.9, 0.9), eps=1e-08)
+        torch.nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
+
+        def annealing(data):
+            decay, decay_step = 0.75, 5000
+            decay_rate = decay ** (data['epoch'] / decay_step)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= decay_rate
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
           'beta2=0.9, eps=1e-08), grad_clip=5.0'.format(lr))
 
-    def annealing(data):
-        decay, decay_step = 0.75, 5000
-        optimizer.alpha = optimizer.alpha * \
-            (decay ** (data['epoch'] / decay_step))
-
     # Setup a trainer
-    parser = BiaffineParser(model)
+    parser = models.BiaffineParser(model)
 
     trainer = Trainer(optimizer, parser, loss_func=parser.compute_loss,
                       accuracy_func=parser.compute_accuracy)
-    trainer.configure(chainer_config)
+    trainer.configure(framework_utils.config)
+    if backend == 'pytorch':
+        trainer.add_hook(Event.EPOCH_TRAIN_BEGIN, lambda data: model.train())
+        trainer.add_hook(Event.EPOCH_VALIDATE_BEGIN, lambda data: model.eval())
     trainer.add_hook(Event.EPOCH_END, annealing)
     if test_dataset:
         trainer.attach_callback(
-            Evaluator(parser, pos_map=loader.get_processor('pos').vocabulary,
-                      ignore_punct=True))
+            utils.Evaluator(parser,
+                            pos_map=loader.get_processor('pos').vocabulary,
+                            ignore_punct=True))
 
     if save_to is not None:
         accessid = Log.getLogger().accessid
         date = Log.getLogger().accesstime.strftime('%Y%m%d')
 
-        def _save(data):
-            epoch = data['epoch']
-            model_file = os.path.join(save_to, "{}-{}.{}.npz"
-                                      .format(date, accessid, epoch))
-            Log.i("saving the model to {} ...".format(model_file))
-            chainer.serializers.save_npz(model_file, model)
+        if backend == 'chainer':
+            def _save(data):
+                epoch = data['epoch']
+                model_file = os.path.join(save_to, "{}-{}.{}.npz"
+                                          .format(date, accessid, epoch))
+                Log.i("saving the model to {} ...".format(model_file))
+                chainer.serializers.save_npz(model_file, model)
+        elif backend == 'pytorch':
+            def _save(data):
+                epoch = data['epoch']
+                model_file = os.path.join(save_to, "{}-{}.{}.mdl"
+                                          .format(date, accessid, epoch))
+                Log.i("saving the model to {} ...".format(model_file))
+                torch.save(model.state_dict(), model_file)
         context['model_cls'] = model_cls
         context['loader'] = loader
         context_file = os.path.join(save_to, "{}-{}.context"
@@ -128,6 +157,28 @@ def test(
 
     # Load context
     context = teras.utils.load_context(model_file)
+    if context.backend == 'chainer':
+        import chainer
+        import chainer_model as models
+        import teras.framework.chainer as framework_utils
+        framework_utils.set_debug(App.debug)
+
+        def _load_test_model(model, file, device_id=-1):
+            chainer.serializers.load_npz(file, model)
+            framework_utils.set_model_to_device(model, device_id)
+            framework_utils.chainer_train_off()
+    elif context.backend == 'pytorch':
+        import torch
+        import pytorch_model as models
+        import teras.framework.pytorch as framework_utils
+
+        def _load_test_model(model, file, device_id=-1):
+            model.load_state_dict(torch.load(file))
+            framework_utils.set_model_to_device(model, device_id)
+            model.eval()
+    else:
+        raise ValueError("backend={} is not supported."
+                         .format(context.backend))
 
     # Load files
     Log.i('load dataset from {}'.format(target_file))
@@ -150,20 +201,14 @@ def test(
         n_labels=len(loader.label_map),
         **context.model_params,
     )
-    chainer.serializers.load_npz(model_file, model)
-    if gpu >= 0:
-        chainer.cuda.get_device_from_id(gpu).use()
-        model.to_gpu()
+    _load_test_model(model, model_file, device_id=gpu)
 
-    chainer_debug(App.debug)
-
-    parser = BiaffineParser(model)
+    parser = models.BiaffineParser(model)
     pos_map = loader.get_processor('pos').vocabulary
     label_map = loader.label_map
-    evaluator = Evaluator(parser, pos_map, ignore_punct=True)
+    evaluator = utils.Evaluator(parser, pos_map, ignore_punct=True)
 
     # Start testing
-    chainer_train_off()
     UAS, LAS, count = 0.0, 0.0, 0.0
     for batch_index, batch in enumerate(
             dataset.batch(context.batch_size, shuffle=False)):
@@ -192,6 +237,9 @@ if __name__ == "__main__":
     Log.AppLogger.configure(mkdir=True)
 
     App.add_command('train', train, {
+        'backend':
+        arg('--backend', type=str, default='chainer',
+            help='Backend framework for computation'),
         'batch_size':
         arg('--batchsize', '-b', type=int, default=32,
             help='Number of examples in each mini-batch'),
