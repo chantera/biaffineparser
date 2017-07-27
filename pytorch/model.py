@@ -104,6 +104,13 @@ def pad_sequence(xs, length=None, padding=-1, dtype=np.float64):
     return torch.from_numpy(y)
 
 
+def _model_var(model, x):
+    p = next(model.parameters())
+    if p.is_cuda:
+        x = x.cuda(p.get_device())
+    return torch.autograd.Variable(x)
+
+
 class BiaffineParser(object):
 
     def __init__(self, model, root_label=0):
@@ -127,7 +134,8 @@ class BiaffineParser(object):
             torch.max(arc_logits, dim=1)[1], dim=1).data.cpu().numpy()
         label_logits = torch.transpose(label_logits, 1, 2)
         size = label_logits.size()
-        output_logits = torch.autograd.Variable(
+        output_logits = _model_var(
+            self.model,
             torch.zeros(size[0], size[2], size[3]))
         for batch_index, (_logits, _arcs, _length) \
                 in enumerate(zip(label_logits, pred_arcs, lengths)):
@@ -140,14 +148,16 @@ class BiaffineParser(object):
         true_arcs, true_labels = t.T
 
         b, l1, l2 = arc_logits.size()
-        true_arcs = torch.autograd.Variable(
+        true_arcs = _model_var(
+            self.model,
             pad_sequence(true_arcs, padding=-1, dtype=np.int64))
         arc_loss = F.cross_entropy(
             arc_logits.view(b * l1, l2), true_arcs.view(b * l1),
             ignore_index=-1)
 
         b, l1, d = label_logits.size()
-        true_labels = torch.autograd.Variable(
+        true_labels = _model_var(
+            self.model,
             pad_sequence(true_labels, padding=-1, dtype=np.int64))
         label_loss = F.cross_entropy(
             label_logits.view(b * l1, d), true_labels.view(b * l1),
