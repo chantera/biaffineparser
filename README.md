@@ -71,7 +71,7 @@ This implementation is different from the original one w.r.t. word embeddings. O
 
 ### Performance
 
-The model implemented by chainer achieves **UAS: 94.91** and **LAS: 92.47** in wsj 22 (development set) in PTB-SD 3.5.0 with the reported hyperparameter settings.
+The model implemented by chainer achieves **UAS: 94.91** and **LAS: 92.47** in wsj 22 (development set) in PTB-SD 3.3.0 with the reported hyperparameter settings.
 
 ## References
 
