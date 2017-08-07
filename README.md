@@ -65,6 +65,14 @@ optional arguments:
                         Decoding target data file (default: None)
 ```
 
+## Notes
+
+This implementation is different from the original one w.r.t. word embeddings. Original model retrieves word vectors from both pretrained and trainable embeddings and then adds together two vectors, while this model uses only one word embedding.
+
+### Performance
+
+The model implemented by chainer achieves **UAS: 94.91** and **LAS: 92.47** in wsj 22 (development set) in PTB-SD 3.5.0 with the reported hyperparameter settings.
+
 ## References
 
   - Dozat, T., Manning, C. D., 2016. Deep Biaffine Attention for Neural Dependency Parsing. arXiv preprint arXiv:1611.01734. <https://arxiv.org/abs/1611.01734>
