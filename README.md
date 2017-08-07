@@ -4,7 +4,7 @@ biaffineparser is chainer/pytorch implementation for Deep Biaffine Attention for
 
 ## Installation
 
-biaffineparser works on Python3 and requires chainer, numpy and teras.
+biaffineparser works on Python3 and requires chainer, numpy, and teras.
 
 ```sh
 $ git clone https://github.com/chantera/biaffineparser
@@ -67,7 +67,7 @@ optional arguments:
 
 ## Notes
 
-This implementation is different from the original one w.r.t. word embeddings. Original model retrieves word vectors from both pretrained and trainable embeddings and then adds together two vectors, while this model uses only one word embedding.
+This implementation is different from the original one w.r.t. word embeddings. Original model retrieves word vectors from both pretrained and trainable embeddings and then adds together two vectors, while this model uses only one word embedding. Other differences such as parameter initialization or dropout may be caused by the frameworks (Chainer/PyTorch vs Tensorflow).
 
 ### Performance
 
