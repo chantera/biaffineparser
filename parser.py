@@ -79,19 +79,32 @@ def train(
         optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
 
         def annealing(data):
+            if not data['train']:
+                return
             decay, decay_step = 0.75, 5000
             optimizer.alpha = optimizer.alpha * \
-                (decay ** (data['epoch'] / decay_step))
+                (decay ** ((optimizer.t + 1) / decay_step))
     elif backend == 'pytorch':
         optimizer = torch.optim.Adam(model.parameters(),
                                      lr=lr, betas=(0.9, 0.9), eps=1e-08)
         torch.nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
 
-        def annealing(data):
-            decay, decay_step = 0.75, 5000
-            decay_rate = decay ** (data['epoch'] / decay_step)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= decay_rate
+        class Annealing(object):
+
+            def __init__(self, optimizer):
+                self.step = 0
+                self.optimizer = optimizer
+
+            def __call__(self, data):
+                if not data['train']:
+                    return
+                self.step = self.step + 1
+                decay, decay_step = 0.75, 5000
+                decay_rate = decay ** (self.step / decay_step)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= decay_rate
+
+        annealing = Annealing(optimizer)
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
           'beta2=0.9, eps=1e-08), grad_clip=5.0'.format(lr))
 
@@ -104,7 +117,7 @@ def train(
     if backend == 'pytorch':
         trainer.add_hook(Event.EPOCH_TRAIN_BEGIN, lambda data: model.train())
         trainer.add_hook(Event.EPOCH_VALIDATE_BEGIN, lambda data: model.eval())
-    trainer.add_hook(Event.EPOCH_END, annealing)
+    trainer.add_hook(Event.BATCH_BEGIN, annealing)
     if test_dataset:
         trainer.attach_callback(
             utils.Evaluator(parser,

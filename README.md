@@ -12,8 +12,7 @@ $ cd biaffineparser
 $ pip install -r requirements.txt
 ```
 
-For backend computation with pytorch, you need to install pytorch from source.  
-See <https://github.com/pytorch/pytorch#from-source>.
+For backend computation with pytorch, you need to install pytorch version 0.2.0.  
 
 ## Usage
 
