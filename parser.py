@@ -82,7 +82,7 @@ def train(
             if not data['train']:
                 return
             decay, decay_step = 0.75, 5000
-            optimizer.alpha = optimizer.alpha * \
+            optimizer.alpha = lr * \
                 (decay ** ((optimizer.t + 1) / decay_step))
     elif backend == 'pytorch':
         optimizer = torch.optim.Adam(model.parameters(),
@@ -102,7 +102,7 @@ def train(
                 decay, decay_step = 0.75, 5000
                 decay_rate = decay ** (self.step / decay_step)
                 for param_group in self.optimizer.param_groups:
-                    param_group['lr'] *= decay_rate
+                    param_group['lr'] = lr * decay_rate
 
         annealing = Annealing(optimizer)
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
