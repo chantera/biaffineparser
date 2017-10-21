@@ -1,6 +1,7 @@
 import numpy as np
 from teras.framework.pytorch.model import Biaffine, Embed, MLP
 import torch
+from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -30,7 +31,7 @@ class DeepBiaffine(nn.Module):
         blstm_cls = nn.GRU if use_gru else nn.LSTM
         self.embed = Embed(*embeddings, dropout=embeddings_dropout,
                            padding_idx=pad_id)
-        embed_size = self.embed.size
+        embed_size = self.embed.size - self.embed[0].weight.data.shape[1]
         self.blstm = blstm_cls(
             num_layers=n_blstm_layers,
             input_size=embed_size,
@@ -63,15 +64,10 @@ class DeepBiaffine(nn.Module):
             Biaffine(n_label_mlp_units, n_label_mlp_units, n_labels,
                      bias=(True, True, True))
 
-    def forward(self, word_tokens, pos_tokens):
+    def forward(self, pretrained_word_tokens, word_tokens, pos_tokens):
         lengths = np.array([len(tokens) for tokens in word_tokens])
-        word_tokens = [np.pad(words, (0, lengths.max() - length),
-                              mode="constant", constant_values=self._pad_id)
-                       for words, length in zip(word_tokens, lengths)]
-        pos_tokens = [np.pad(tags, (0, lengths.max() - length),
-                             mode="constant", constant_values=self._pad_id)
-                      for tags, length in zip(pos_tokens, lengths)]
-        X = self.embed(word_tokens, pos_tokens)
+        X = self.forward_embed(
+            pretrained_word_tokens, word_tokens, pos_tokens, lengths)
         indices = np.argsort(-np.array(lengths)).astype(np.int64)
         lengths = lengths[indices]
         X = torch.stack([X[idx] for idx in indices])
@@ -88,6 +84,60 @@ class DeepBiaffine(nn.Module):
         H_label_head = self.mlp_label_head(R)
         label_logits = self.label_biaffine(H_label_dep, H_label_head)
         return arc_logits, label_logits
+
+    def forward_embed(self, pretrained_word_tokens, word_tokens,
+                      pos_tokens, lengths=None):
+        if lengths is None:
+            lengths = np.array([len(tokens) for tokens in word_tokens])
+        max_length = lengths.max() + 20
+        X = []
+        batch = len(word_tokens)
+        if next(self.parameters()).is_cuda:
+            device_id = next(self.parameters()).get_device()
+            for i in range(batch):
+                wp_idx = Variable(torch.from_numpy(
+                    np.pad(pretrained_word_tokens[i],
+                           (0, max_length - lengths[i]),
+                           mode="constant", constant_values=self._pad_id)
+                    .astype(np.int64)).cuda(device_id))
+                xs_words_pretrained = self.embed[0](wp_idx)
+                w_idx = Variable(torch.from_numpy(
+                    np.pad(word_tokens[i], (0, max_length - lengths[i]),
+                           mode="constant", constant_values=self._pad_id)
+                    .astype(np.int64)).cuda(device_id))
+                xs_words = self.embed[1](w_idx)
+                xs_words += xs_words_pretrained
+                p_idx = Variable(torch.from_numpy(
+                    np.pad(pos_tokens[i], (0, max_length - lengths[i]),
+                           mode="constant", constant_values=self._pad_id)
+                    .astype(np.int64)).cuda(device_id))
+                xs_tags = self.embed[2](p_idx)
+                xs = torch.cat([self.embed._dropout(xs_words),
+                                self.embed._dropout(xs_tags)])
+                X.append(xs)
+        else:
+            for i in range(batch):
+                wp_idx = Variable(torch.from_numpy(
+                    np.pad(pretrained_word_tokens[i],
+                           (0, max_length - lengths[i]),
+                           mode="constant", constant_values=self._pad_id)
+                    .astype(np.int64)))
+                xs_words_pretrained = self.embed[0](wp_idx)
+                w_idx = Variable(torch.from_numpy(
+                    np.pad(word_tokens[i], (0, max_length - lengths[i]),
+                           mode="constant", constant_values=self._pad_id)
+                    .astype(np.int64)))
+                xs_words = self.embed[1](w_idx)
+                xs_words += xs_words_pretrained
+                p_idx = Variable(torch.from_numpy(
+                    np.pad(pos_tokens[i], (0, max_length - lengths[i]),
+                           mode="constant", constant_values=self._pad_id)
+                    .astype(np.int64)))
+                xs_tags = self.embed[2](p_idx)
+                xs = torch.cat([self.embed._dropout(xs_words),
+                                self.embed._dropout(xs_tags)], dim=1)
+                X.append(xs)
+        return X
 
 
 def pad_sequence(xs, length=None, padding=-1, dtype=np.float64):
@@ -113,9 +163,10 @@ class BiaffineParser(object):
         self.model = model
         self._ROOT_LABEL = root_label
 
-    def forward(self, word_tokens, pos_tokens):
+    def forward(self, pretrained_word_tokens, word_tokens, pos_tokens):
         lengths = [len(tokens) for tokens in word_tokens]
-        arc_logits, label_logits = self.model.forward(word_tokens, pos_tokens)
+        arc_logits, label_logits = \
+            self.model.forward(pretrained_word_tokens, word_tokens, pos_tokens)
         # cache
         self._lengths = lengths
         self._arc_logits = arc_logits
@@ -182,9 +233,10 @@ class BiaffineParser(object):
         accuracy = (arc_accuracy + label_accuracy) / 2
         return accuracy
 
-    def parse(self, word_tokens=None, pos_tokens=None):
+    def parse(self, pretrained_word_tokens=None,
+              word_tokens=None, pos_tokens=None):
         if word_tokens is not None:
-            self.forward(word_tokens, pos_tokens)
+            self.forward(pretrained_word_tokens, word_tokens, pos_tokens)
         ROOT = self._ROOT_LABEL
         arcs_batch, labels_batch = [], []
         arc_logits = self._arc_logits.data.cpu().numpy()
@@ -193,9 +245,10 @@ class BiaffineParser(object):
         for arc_logit, label_logit, length in \
                 zip(arc_logits, np.transpose(label_logits, (0, 2, 1, 3)),
                     self._lengths):
-            arcs = mst(arc_logit[:length, :length])
-            label_scores = label_logit[np.arange(length), arcs]
-            labels = np.argmax(label_scores, axis=1)
+            arc_probs = softmax2d(arc_logit[:length, :length])
+            arcs = mst(arc_probs)
+            label_probs = softmax2d(label_logit[np.arange(length), arcs])
+            labels = np.argmax(label_probs, axis=1)
             labels[0] = ROOT
             tokens = np.arange(1, length)
             roots = np.where(labels[tokens] == ROOT)[0] + 1
@@ -203,9 +256,9 @@ class BiaffineParser(object):
                 root_arc = np.where(arcs[tokens] == 0)[0] + 1
                 labels[root_arc] = ROOT
             elif len(roots) > 1:
-                label_scores[roots, ROOT] = 0
+                label_probs[roots, ROOT] = 0
                 new_labels = \
-                    np.argmax(label_scores[roots], axis=1)
+                    np.argmax(label_probs[roots], axis=1)
                 root_arc = np.where(arcs[tokens] == 0)[0] + 1
                 labels[roots] = new_labels
                 labels[root_arc] = ROOT
@@ -213,3 +266,10 @@ class BiaffineParser(object):
             labels_batch.append(labels)
 
         return arcs_batch, labels_batch
+
+
+def softmax2d(x):
+    y = x - np.max(x, axis=1, keepdims=True)
+    np.exp(y, out=y)
+    y /= y.sum(axis=1, keepdims=True)
+    return y
