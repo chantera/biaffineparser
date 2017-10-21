@@ -68,7 +68,7 @@ optional arguments:
 
 ## Notes
 
-This implementation is different from the original one w.r.t. word embeddings. Original model retrieves word vectors from both pretrained and trainable embeddings and then adds together two vectors, while this model uses only one word embedding. Other differences such as parameter initialization or dropout may be caused by the frameworks (Chainer/PyTorch vs Tensorflow).
+The pytorch model weight initialization and GPU computation have not been completed yet.
 
 ### Performance
 
