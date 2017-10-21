@@ -44,6 +44,13 @@ def train(
         import torch
         import pytorch_model as models
         import teras.framework.pytorch as framework_utils
+        if seed is not None:
+            import random
+            import numpy
+            random.seed(seed)
+            numpy.random.seed(seed)
+            torch.manual_seed(seed)
+            Log.i("random seed: {}".format(seed))
     else:
         raise ValueError("backend={} is not supported."
                          .format(backend))
