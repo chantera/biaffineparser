@@ -120,10 +120,18 @@ class Evaluator(Callback):
                      in Evaluator.PUNCT_TAGS] if pos_map is not None else []
         self._PUNCTS = np.array(punct_ids)
         self._ignore_punct = ignore_punct
-        self.reset()
+        self.reset(init_history=True)
 
-    def reset(self):
+    def reset(self, init_history=False):
+        if init_history:
+            self._history = []
         self.record = {'UAS': 0, 'LAS': 0, 'count': 0}
+
+    def get_history(self):
+        return self._history
+
+    def on_train_begin(self, data):
+        self.reset(init_history=True)
 
     def evaluate(self, pred_arcs, pred_labels,
                  true_arcs, true_labels, ignore_mask=None):
@@ -138,7 +146,7 @@ class Evaluator(Callback):
         LAS = np.sum((match_arcs * match_labels))
         return UAS, LAS, count
 
-    def create_ignore_mask(self, words, postags, ignore_punct=True):
+    def create_ignore_mask(self, postags, ignore_punct=True):
         if ignore_punct:
             mask = np.isin(postags, self._PUNCTS).astype(np.int32)
         else:
@@ -154,13 +162,12 @@ class Evaluator(Callback):
     def on_batch_end(self, data):
         if data['train']:
             return
-        word_tokens, pos_tokens = data['xs']
+        pos_tokens = data['xs'][2]
         arcs_batch, labels_batch = self._parser.parse()
         true_arcs, true_labels = data['ts'].T
         for i, (p_arcs, p_labels, t_arcs, t_labels) in enumerate(
                 zip(arcs_batch, labels_batch, true_arcs, true_labels)):
-            mask = self.create_ignore_mask(word_tokens[i], pos_tokens[i],
-                                           self._ignore_punct)
+            mask = self.create_ignore_mask(pos_tokens[i], self._ignore_punct)
             UAS, LAS, count = self.evaluate(p_arcs, p_labels,
                                             t_arcs, t_labels, mask)
             self.record['UAS'] += UAS
@@ -169,6 +176,11 @@ class Evaluator(Callback):
 
     def on_epoch_validate_end(self, data):
         self.report()
+        self._history.append({
+            'UAS': self.record['UAS'] / self.record['count'] * 100,
+            'LAS': self.record['LAS'] / self.record['count'] * 100,
+            'count': self.record['count']
+        })
         self.reset()
 
 
@@ -179,50 +191,65 @@ class DataLoader(CorpusLoader):
                  pos_embed_size=100,
                  word_embed_file=None,
                  word_preprocess=lambda x: re.sub(r'[0-9]', '0', x.lower()),
-                 word_unknown="UNKNOWN"):
+                 word_unknown="UNKNOWN",
+                 embed_dtype='float32'):
         super(DataLoader, self).__init__(reader=ConllReader())
-        self.use_pretrained = word_embed_file is not None
+        if word_embed_file is not None:
+            self.use_pretrained = True
+            self.add_processor(
+                'word_pretrained', embed_file=word_embed_file,
+                embed_dtype=embed_dtype,
+                preprocess=word_preprocess, unknown=word_unknown)
+            word_min_frequency = 2
+        else:
+            self.add_processor(
+                'word_pretrained', embed_size=word_embed_size,
+                embed_dtype=embed_dtype,
+                preprocess=word_preprocess, unknown=word_unknown,
+                initializer=np.zeros)
+            self.use_pretrained = False
+            word_min_frequency = 1
         self.add_processor(
-            'word', embed_file=word_embed_file, embed_size=word_embed_size,
-            preprocess=word_preprocess, unknown=word_unknown)
+            'word', embed_size=word_embed_size,
+            embed_dtype=embed_dtype,
+            preprocess=word_preprocess, unknown=word_unknown,
+            min_frequency=word_min_frequency)
         self.add_processor(
-            'pos', embed_file=None, embed_size=pos_embed_size,
+            'pos', embed_size=pos_embed_size,
+            embed_dtype=embed_dtype,
             preprocess=lambda x: x.lower())
         self.label_map = text.Vocab()
         self._sentences = {}
 
     def map(self, item):
-        # item -> (words, postags, (heads, labels))
-        words = []
-        postags = []
-        heads = []
-        labels = []
-        for token in item:
-            words.append(token['form'])
-            postags.append(token['postag'])
-            heads.append(token['head'])
-            labels.append(self.label_map.add(token['deprel']))
-        sample = (self._word_transform_one(words),
+        # item -> (pretrained_words, words, postags, (heads, labels))
+        words, postags, heads, labels = \
+            zip(*[(token['form'],
+                   token['postag'],
+                   token['head'],
+                   self.label_map.add(token['deprel']))
+                  for token in item])
+        sample = (self.get_processor('word_pretrained').transform_one(words),
+                  self._word_transform_one(words),
                   self.get_processor('pos').fit_transform_one(postags),
                   (np.array(heads, dtype=np.int32),
                    np.array(labels, dtype=np.int32)))
-        sentence_id = ':'.join(str(word_id) for word_id in sample[0])
-        self._sentences[sentence_id] = words
+        self._sentences[hash(tuple(sample[0]))] = words
         return sample
 
     def load(self, file, train=False, size=None):
-        if train and not self.use_pretrained:
+        if train:
             # assign an index if the given word is not in vocabulary
-            word_transform_one = self.get_processor('word').fit_transform_one
+            self._word_transform_one = \
+                self.get_processor('word').fit_transform_one
         else:
             # return the unknown word index if the word is not in vocabulary
-            word_transform_one = self.get_processor('word').transform_one
-        self._word_transform_one = word_transform_one
+            self._word_transform_one = \
+                self.get_processor('word').transform_one
         return super(DataLoader, self).load(file, train, size)
 
     def get_sentence(self, word_ids, default=None):
-        sentence_id = ':'.join(str(word_id) for word_id in word_ids)
-        return self._sentences.get(sentence_id, default)
+        return self._sentences.get(hash(tuple(word_ids)), default)
 
     def __getstate__(self):
         state = self.__dict__.copy()

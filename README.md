@@ -23,7 +23,8 @@ usage: parser.py train [-h] [--backend {chainer,pytorch}]
                        [--batchsize BATCH_SIZE] [--embedfile EMBED_FILE]
                        [--embedsize EMBED_SIZE] [--epoch N_EPOCH] [--gpu GPU]
                        [--lr LR] [--model MODEL_PARAMS] [--out SAVE_TO]
-                       --trainfile TRAIN_FILE [--validfile TEST_FILE]
+                       [--seed SEED] --trainfile TRAIN_FILE
+                       [--validfile TEST_FILE]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -42,6 +43,7 @@ optional arguments:
   --lr LR               Learning Rate (default: 0.002)
   --model MODEL_PARAMS  Model hyperparameter (default: {})
   --out SAVE_TO         Save model to the specified directory (default: None)
+  --seed SEED           Random seed (default: None)
   --trainfile TRAIN_FILE
                         training data file (default: None)
   --validfile TEST_FILE

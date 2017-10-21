@@ -20,12 +20,26 @@ def train(
         model_params={},
         gpu=-1,
         save_to=None,
+        seed=None,
         backend='chainer'):
     if backend == 'chainer':
         import chainer
         import chainer_model as models
         import teras.framework.chainer as framework_utils
         framework_utils.set_debug(App.debug)
+        if seed is not None:
+            import random
+            import numpy
+            random.seed(seed)
+            numpy.random.seed(seed)
+            if gpu >= 0:
+                try:
+                    import cupy
+                    cupy.cuda.runtime.setDevice(gpu)
+                    cupy.random.seed(seed)
+                except Exception as e:
+                    Log.e(str(e))
+            Log.i("random seed: {}".format(seed))
     elif backend == 'pytorch':
         import torch
         import pytorch_model as models
@@ -63,7 +77,11 @@ def train(
 
     # Set up a neural network model
     model = model_cls(
-        embeddings=(loader.get_embeddings('word'),
+        embeddings=({'initialW':
+                     loader.get_embeddings('word_pretrained', normalize='l2'),
+                     'fixed_weight': True},
+                    {'initialW': loader.get_embeddings('word'),
+                     'fixed_weight': False},
                     loader.get_embeddings('pos')),
         n_labels=len(loader.label_map),
         **model_params,
@@ -74,19 +92,16 @@ def train(
     # Setup an optimizer
     if backend == 'chainer':
         optimizer = chainer.optimizers.Adam(
-            alpha=lr, beta1=0.9, beta2=0.9, eps=1e-08)
+            alpha=lr, beta1=0.9, beta2=0.9, eps=1e-12)
         optimizer.setup(model)
         optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
-
-        def annealing(data):
-            if not data['train']:
-                return
-            decay, decay_step = 0.75, 5000
-            optimizer.alpha = lr * \
-                (decay ** ((optimizer.t + 1) / decay_step))
+        optimizer.add_hook(
+            framework_utils.optimizers.ExponentialDecayAnnealing(
+                initial_lr=lr, decay_rate=0.75, decay_step=5000,
+                lr_key='alpha'))
     elif backend == 'pytorch':
         optimizer = torch.optim.Adam(model.parameters(),
-                                     lr=lr, betas=(0.9, 0.9), eps=1e-08)
+                                     lr=lr, betas=(0.9, 0.9), eps=1e-12)
         torch.nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
 
         class Annealing(object):
@@ -106,7 +121,7 @@ def train(
 
         annealing = Annealing(optimizer)
     Log.i('optimizer: Adam(alpha={}, beta1=0.9, '
-          'beta2=0.9, eps=1e-08), grad_clip=5.0'.format(lr))
+          'beta2=0.9, eps=1e-12), grad_clip=5.0'.format(lr))
 
     # Setup a trainer
     parser = models.BiaffineParser(model)
@@ -117,7 +132,7 @@ def train(
     if backend == 'pytorch':
         trainer.add_hook(Event.EPOCH_TRAIN_BEGIN, lambda data: model.train())
         trainer.add_hook(Event.EPOCH_VALIDATE_BEGIN, lambda data: model.eval())
-    trainer.add_hook(Event.BATCH_BEGIN, annealing)
+        trainer.add_hook(Event.BATCH_BEGIN, annealing)
     if test_dataset:
         trainer.attach_callback(
             utils.Evaluator(parser,
@@ -189,7 +204,11 @@ def test(
 
     # Set up a neural network model
     model = context.model_cls(
-        embeddings=(loader.get_embeddings('word'),
+        embeddings=({'initialW':
+                     loader.get_embeddings('word_pretrained', normalize='l2'),
+                     'fixed_weight': True},
+                    {'initialW': loader.get_embeddings('word'),
+                     'fixed_weight': False},
                     loader.get_embeddings('pos')),
         n_labels=len(loader.label_map),
         **context.model_params,
@@ -205,12 +224,13 @@ def test(
     UAS, LAS, count = 0.0, 0.0, 0.0
     for batch_index, batch in enumerate(
             dataset.batch(context.batch_size, shuffle=False)):
-        word_tokens, pos_tokens = batch[:-1]
+        pretrained_word_tokens, word_tokens, pos_tokens = batch[:-1]
         true_arcs, true_labels = batch[-1].T
-        arcs_batch, labels_batch = parser.parse(word_tokens, pos_tokens)
+        arcs_batch, labels_batch = parser.parse(
+            pretrained_word_tokens, word_tokens, pos_tokens)
         for i, (p_arcs, p_labels, t_arcs, t_labels) in enumerate(
                 zip(arcs_batch, labels_batch, true_arcs, true_labels)):
-            mask = evaluator.create_ignore_mask(word_tokens[i], pos_tokens[i])
+            mask = evaluator.create_ignore_mask(pos_tokens[i])
             _uas, _las, _count = evaluator.evaluate(
                 p_arcs, p_labels, t_arcs, t_labels, mask)
             if decode:
@@ -255,6 +275,9 @@ if __name__ == "__main__":
         'n_epoch':
         arg('--epoch', '-e', type=int, default=20,
             help='Number of sweeps over the dataset to train'),
+        'seed':
+        arg('--seed', type=int, default=None,
+            help='Random seed'),
         'save_to':
         arg('--out', type=str, default=None,
             help='Save model to the specified directory'),
