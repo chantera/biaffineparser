@@ -99,4 +99,5 @@ ENV/
 *.mdl
 *.context
 logs/*
+cache/*
 !.gitkeep

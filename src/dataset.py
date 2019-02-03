@@ -1,0 +1,57 @@
+from collections import Counter
+
+import numpy as np
+from teras.dataset.loader import TextLoader
+from teras.io.reader import ConllReader
+from teras.preprocessing import text
+
+
+class DataLoader(TextLoader):
+
+    def __init__(self,
+                 word_embed_size=100,
+                 postag_embed_size=100,
+                 word_embed_file=None,
+                 word_preprocess=text.lower,
+                 word_unknown="<UNK>",
+                 input_file=None,
+                 min_frequency=2):
+        super().__init__(reader=ConllReader())
+        words = []
+        if input_file is not None:
+            counter = Counter([word_preprocess(token['form'])
+                               for sentence in self._reader.read(input_file)
+                               for token in sentence])
+            for word, count in counter.most_common():
+                if count < min_frequency:
+                    break
+                words.append(word)
+        word_vocab = text.EmbeddingVocab.from_words(
+            words, unknown=word_unknown, dim=word_embed_size,
+            initializer=text.EmbeddingVocab.random_normal)
+        pretrained_word_vocab = text.EmbeddingVocab(
+            unknown=word_unknown, file=word_embed_file, dim=word_embed_size,
+            initializer=(text.EmbeddingVocab.random_normal
+                         if word_embed_size is not None else np.zeros))
+        postag_vocab = text.EmbeddingVocab(
+            unknown=word_unknown, dim=postag_embed_size,
+            initializer=text.EmbeddingVocab.random_normal)
+        self.add_processor(
+            'word', word_vocab, preprocess=word_preprocess)
+        self.add_processor(
+            'pre', pretrained_word_vocab, preprocess=word_preprocess)
+        self.add_processor('pos', postag_vocab, preprocess=False)
+        self.rel_map = text.Dict()
+
+    def map(self, item):
+        words, postags, heads, rels = zip(*[
+            (token['form'], token['postag'], token['head'], token['deprel'])
+            for token in item])
+        word_ids = self.map_attr('word', words, False)
+        pre_ids = self.map_attr('pre', words, False)
+        postag_ids = self.map_attr('pos', postags, True)
+        heads = np.array(heads, dtype=np.int32)
+        rel_ids = np.array(
+            [self.rel_map.add(rel) for rel in rels], dtype=np.int32)
+        sample = (word_ids, pre_ids, postag_ids, (heads, rel_ids))
+        return sample
