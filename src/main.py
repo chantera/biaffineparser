@@ -1,14 +1,20 @@
+import chainer
 from teras.app import App, arg
 from teras.io import cache
+import teras.training as training
 import teras.utils.logging as Log
 from teras.utils import git
+from tqdm import tqdm
 
 import dataset
+import models
 
 
-def train(train_file, test_file=None, cache_dir='', refresh_cache=False):
+def train(train_file, test_file=None,
+          epoch=20, batch_size=32,
+          cache_dir='', refresh_cache=False):
 
-    def _create():
+    def _load():
         loader = dataset.DataLoader(input_file=train_file)
         train_dataset = loader.load(train_file, train=True)
         test_dataset = loader.load(test_file, train=False) \
@@ -17,8 +23,17 @@ def train(train_file, test_file=None, cache_dir='', refresh_cache=False):
 
     loader, train_dataset, test_dataset = \
         cache.load_or_create(key=(git.hash(), train_file, test_file),
-                             factory=_create, refresh=refresh_cache,
+                             factory=_load, refresh=refresh_cache,
                              dir=cache_dir, mkdir=True, logger=Log.getLogger())
+
+    epoch = 1
+    model = models.BiaffineParser()
+    optimizer = chainer.optimizers.Adam(alpha=0.001)
+    optimizer.setup(model)
+    trainer = training.Trainer(optimizer, model, loss_func=model.compute_loss)
+    trainer.add_listener(
+        training.listeners.ProgressBar(lambda n: tqdm(total=n)), priority=200)
+    trainer.fit(train_dataset, test_dataset, epoch, batch_size)
 
 
 if __name__ == "__main__":
