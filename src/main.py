@@ -27,7 +27,18 @@ def train(train_file, test_file=None,
                              dir=cache_dir, mkdir=True, logger=Log.getLogger())
 
     epoch = 1
-    model = models.BiaffineParser()
+    model = models.BiaffineParser(
+        n_labels=len(loader.rel_map),
+        encoder=models.Encoder(
+            loader.get_embeddings('word'),
+            loader.get_embeddings('pre'),
+            loader.get_embeddings('pos'),
+            n_lstm_layers=3,
+            lstm_hidden_size=None,
+            embeddings_dropout=0.33,
+            lstm_dropout=0.0),
+        arc_mlp_units=500, rel_mlp_units=100,
+        arc_mlp_dropout=0.33, rel_mlp_dropout=0.33)
     optimizer = chainer.optimizers.Adam(alpha=0.001)
     optimizer.setup(model)
     trainer = training.Trainer(optimizer, model, loss_func=model.compute_loss)

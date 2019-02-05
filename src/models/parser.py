@@ -11,11 +11,12 @@ NOTE: Weight Initialization comparison
     - URL: https://github.com/chantera/biaffineparser
     - Framework: Chainer (v5.2)
     - Initialization:
-      - Embeddings (word):
-      - Embeddings (postag):
-      - BiLSTMs:
-      - MLPs:
-      - Biffines:
+      - Embeddings (word): random_normal + pretrained
+      - Embeddings (postag): random_normal
+      - BiLSTMs: `chainer.links.NStepBiLSTM` default
+            (W: N(0,sqrt(1/w_in)), b: zero)
+      - MLPs: W: uniform(-s,s) where s=sqrt(1/fan_in), b: zero
+      - Biffines: U,W1,W2: xavier_uniform, b: zero
   - B. Original
     - URL: https://github.com/tdozat/Parser-v1
       <tree:0739216129cd39d69997d28cbc4133b360ea3934>
@@ -78,7 +79,7 @@ class BiaffineParser(chainer.Chain):
 
     def __init__(self, n_labels, encoder,
                  arc_mlp_units=500, rel_mlp_units=100,
-                 arc_mlp_dropout=0.33, rel_mlp_dropout=0.33):
+                 arc_mlp_dropout=0.0, rel_mlp_dropout=0.0):
         super().__init__()
         if isinstance(arc_mlp_units, int):
             arc_mlp_units = [arc_mlp_units]
@@ -86,35 +87,41 @@ class BiaffineParser(chainer.Chain):
             rel_mlp_units = [rel_mlp_units]
         mlp_activation = F.leaky_relu
         with self.init_scope():
-            # This results in: uniform(-s, s) where s = sqrt(1/fan_in)
-            # This is same as the Initialization of `torch.nn.Linear`
-            # which is used in NeuroNLP2 [https://github.com/XuezheMax/NeuroNLP2]
-            # and 
-            # Note that orthonormal_initializer is used in the original implementation.
-            uniform = chainer.initializers.HeUniform(scale=np.sqrt(1. / 6.))
-            # self.encoder = encoder
+            self.encoder = encoder
+            h_dim = self.encoder.out_size
+            init_mlp = chainer.initializers.HeUniform(scale=np.sqrt(1. / 6.))
             self.mlp_arc_head = nn.MLP([nn.MLP.Layer(
-                None, u, mlp_activation, arc_mlp_dropout, initialW=uniform,
-                initial_bias=uniform) for u in arc_mlp_units])
+                h_dim, u, mlp_activation, arc_mlp_dropout, initialW=init_mlp,
+                initial_bias=0.) for u in arc_mlp_units])
             self.mlp_arc_dep = nn.MLP([nn.MLP.Layer(
-                None, u, mlp_activation, arc_mlp_dropout, initialW=uniform,
-                initial_bias=uniform) for u in arc_mlp_units])
+                h_dim, u, mlp_activation, arc_mlp_dropout, initialW=init_mlp,
+                initial_bias=0.) for u in arc_mlp_units])
             self.mlp_rel_head = nn.MLP([nn.MLP.Layer(
-                None, u, mlp_activation, rel_mlp_dropout, initialW=uniform,
-                initial_bias=uniform) for u in rel_mlp_units])
+                h_dim, u, mlp_activation, rel_mlp_dropout, initialW=init_mlp,
+                initial_bias=0.) for u in rel_mlp_units])
             self.mlp_rel_dep = nn.MLP([nn.MLP.Layer(
-                None, u, mlp_activation, rel_mlp_dropout, initialW=uniform,
-                initial_bias=uniform) for u in rel_mlp_units])
-            self.biaf_arc
-            self.biaf_rel
-
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+                h_dim, u, mlp_activation, rel_mlp_dropout, initialW=init_mlp,
+                initial_bias=0.) for u in rel_mlp_units])
+            init_biaf = chainer.initializers.GlorotUniform()
+            self.biaf_arc = nn.Biaffine(
+                arc_mlp_units[-1], arc_mlp_units[-1], 1,
+                nobias=(False, True, True),
+                initialW=init_biaf, initial_bias=0.)
+            self.biaf_rel = nn.Biaffine(
+                rel_mlp_units[-1], rel_mlp_units[-1], n_labels,
+                nobias=(False, False, False),
+                initialW=init_biaf, initial_bias=0.)
 
     def forward(self, words, pretrained_words, postags):
-        hs = self.encoder(words, pretrained_words, postags)
-        hs_arc_h, hs_arc_d = self.mlp_arc_dep(hs), self.mlp_arc_dep(hs)
-        hs_rel_h, hs_rel_d = self.mlp_rel_dep(hs), self.mlp_rel_dep(hs)
+        hs = self.encoder(words, pretrained_words, postags)  # => [(n, d); B]
+        self._hs = hs
+        hs = F.pad_sequence(hs)  # => (B, n_max, d)
+        hs_arc_h = self.mlp_arc_head(hs, n_batch_axes=2)
+        hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
+        hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
+        hs_rel_d = self.mlp_rel_dep(hs, n_batch_axes=2)
+        print(hs_arc_h.shape, hs_arc_d.shape)
+        print(hs_rel_h.shape, hs_rel_d.shape)
         logits_arc, logits_rel = (self.biaf_arc(hs_arc_h, hs_arc_d),
                                   self.biaf_rel(hs_rel_h, hs_rel_d))
         return logits_arc, logits_rel
@@ -123,8 +130,51 @@ class BiaffineParser(chainer.Chain):
         return chainer.Variable(np.zeros(1))
 
 
-chainer.Variable.__int__ = lambda self: int(self.data)
-chainer.Variable.__float__ = lambda self: float(self.data)
+class Encoder(chainer.Chain):
+
+    def __init__(self,
+                 word_embeddings,
+                 pretrained_word_embeddings=None,
+                 postag_embeddings=None,
+                 n_lstm_layers=3,
+                 lstm_hidden_size=None,
+                 embeddings_dropout=0.0,
+                 lstm_dropout=0.0):
+        super().__init__()
+        with self.init_scope():
+            embeddings = [(word_embeddings, False)]  # (weights, fixed)
+            lstm_in_size = word_embeddings.shape[1]
+            if pretrained_word_embeddings is not None:
+                embeddings.append((pretrained_word_embeddings, True))
+            if postag_embeddings is not None:
+                embeddings.append((postag_embeddings, False))
+                lstm_in_size += postag_embeddings.shape[1]
+            embed_list = []
+            for weights, fixed in embeddings:
+                s = weights.shape
+                embed_list.append(nn.EmbedID(s[0], s[1], weights, fixed))
+            self.embeds = nn.EmbedList(embed_list, dropout=0.0, merge=False)
+            if lstm_hidden_size is None:
+                lstm_hidden_size = lstm_in_size
+            self.bilstm = chainer.links.NStepBiLSTM(
+                n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout)
+        self.embeddings_dropout = embeddings_dropout
+        self._hidden_size = lstm_hidden_size
+
+    def forward(self, *xs):
+        rs_words, rs_words_pretrained, rs_postags = self.embeds(*xs)
+        # => [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
+        rs = [F.concat((nn.dropout(rs_word_seq + rs_pre_seq,
+                                   self.embeddings_dropout),
+                        nn.dropout(rs_pos_seq, self.embeddings_dropout)))
+              for rs_word_seq, rs_pre_seq, rs_pos_seq
+              in zip(rs_words, rs_words_pretrained, rs_postags)]
+        # => [(n, d_word + d_pos); B]
+        return self.bilstm(hx=None, cx=None, xs=rs)[-1]
+
+    @property
+    def out_size(self):
+        return self._hidden_size * 2
 
 
 # hack

@@ -1,1 +1,1 @@
-from .parser import BiaffineParser  # NOQA
+from .parser import BiaffineParser, Encoder  # NOQA

@@ -1,5 +1,8 @@
+from itertools import accumulate
+
 import chainer
 import chainer.functions as F
+import numpy as np
 
 
 class EmbedID(chainer.link.Link):
@@ -20,8 +23,12 @@ class EmbedID(chainer.link.Link):
             if fix_weight:
                 self.W._requires_grad = self.W._node._requires_grad = False
 
-    def __call__(self, x):
-        return _EmbedIDFunction(x, self.W, self.ignore_label, self.fix_weight)
+    def forward(self, x):
+        return embed_id(x, self.W, self.ignore_label, self.fix_weight)
+
+
+def embed_id(x, W, ignore_label=None, fix_weight=False):
+    return _EmbedIDFunction(ignore_label, fix_weight).apply((x, W))[0]
 
 
 class _EmbedIDFunction(F.connection.embed_id.EmbedIDFunction):
@@ -36,15 +43,47 @@ class _EmbedIDFunction(F.connection.embed_id.EmbedIDFunction):
         return super().backward(indexes, grad_outputs)
 
 
+class EmbedList(chainer.link.ChainList):
+
+    def __init__(self, embeddings, dropout=0.0, merge=True):
+        assert all(isinstance(embed, (chainer.links.EmbedID, EmbedID))
+                   for embed in embeddings)
+        super().__init__(*embeddings)
+        if isinstance(dropout, (list, tuple)) \
+                and len(dropout) != len(embeddings):
+            raise ValueError(
+                "dropout ratio must be specified for all embeddings")
+        self.dropout = dropout
+        self.merge = merge
+
+    def forward(self, *xs, merged=True):
+        if isinstance(self.dropout, (list, tuple)):
+            dropout_each, dropout_all = self.dropout, 0.0
+        else:
+            dropout_each, dropout_all = [0.0] * len(self), self.dropout
+        boundaries = list(accumulate(len(x) for x in xs[0][:-1]))
+        xp = chainer.cuda.get_array_module(xs[0][0])
+        ys_flatten = [_apply_dropout(
+            embed(xp.concatenate(xs_each, axis=0)), dropout)
+            for embed, xs_each, dropout in zip(self, xs, dropout_each)]
+        if self.merge:
+            ys = F.split_axis(_apply_dropout(
+                F.concat(ys_flatten), dropout_all), boundaries, axis=0)
+        else:
+            ys = [F.split_axis(ys_flatten_each, boundaries, axis=0)
+                  for ys_flatten_each in ys_flatten]
+        return ys
+
+
 class MLP(chainer.link.ChainList):
 
     def __init__(self, layers):
-        assert all(type(layer) == MLP.Layer for layer in layers)
+        assert all(isinstance(layer, MLP.Layer) for layer in layers)
         super().__init__(*layers)
 
-    def __call__(self, x):
+    def forward(self, x, n_batch_axes=1):
         for layer in self:
-            x = layer(x)
+            x = layer(x, n_batch_axes)
         return x
 
     class Layer(chainer.links.Linear):
@@ -63,11 +102,65 @@ class MLP(chainer.link.ChainList):
             h = super().forward(x, n_batch_axes)
             if self.activate is not None:
                 h = self.activate(h)
-            return dropout(x, self.dropout)
+            return _apply_dropout(h, self.dropout)
 
 
-def dropout(x, ratio=.5, **kwargs):
+def _apply_dropout(x, ratio=.5, **kwargs):
     """Disable dropout when ratio == 0.0."""
-    enabled = chainer.configuration.config.train and ratio > 0.0
-    with chainer.using_config('train', enabled):
+    if chainer.configuration.config.train and ratio > 0.0:
         return F.dropout(x, ratio, **kwargs)
+    return chainer.as_variable(x)
+
+
+dropout = _apply_dropout
+
+
+class Biaffine(chainer.link.Link):
+
+    def __init__(self, left_size, right_size, out_size,
+                 nobias=(False, False, False),
+                 initialW=None, initial_bias=None):
+        super().__init__()
+        self.in_sizes = (left_size, right_size)
+        self.out_size = out_size
+        self.nobias = nobias
+
+        with self.init_scope():
+            shape = (left_size + int(not(self.nobias[0])),
+                     right_size + int(not(self.nobias[1])),
+                     out_size)
+            if isinstance(initialW, (np.ndarray, chainer.cuda.ndarray)):
+                assert initialW.shape == shape
+            self.W = chainer.Parameter(
+                chainer.initializers._get_initializer(initialW), shape)
+
+            if not self.nobias[2]:
+                if initial_bias is None:
+                    initial_bias = 0
+                self.b = chainer.Parameter(initial_bias, (out_size,))
+
+    def forward(self, x1, x2):
+        xp = self.xp
+        out_size = self.out_size
+        batch_size, len1, dim1 = x1.shape
+        if not self.nobias[0]:
+            x1 = F.concat((x1, xp.ones((batch_size, len1, 1),
+                                       dtype=xp.float32)), axis=2)
+            dim1 += 1
+        len2, dim2 = x2.shape[1:]
+        if not self.nobias[1]:
+            x2 = F.concat((x2, xp.ones((batch_size, len2, 1),
+                                       dtype=xp.float32)), axis=2)
+            dim2 += 1
+        x1_reshaped = F.reshape(x1, (batch_size * len1, dim1))
+        W_reshaped = F.reshape(F.transpose(self.W, (0, 2, 1)),
+                               (dim1, out_size * dim2))
+        affine = F.reshape(F.matmul(x1_reshaped, W_reshaped),
+                           (batch_size, len1 * out_size, dim2))
+        biaffine = F.transpose(
+            F.reshape(F.matmul(affine, x2, transb=True),
+                      (batch_size, len1, out_size, len2)),
+            (0, 1, 3, 2))
+        if not self.nobias[2]:
+            biaffine += F.broadcast_to(self.b, biaffine.shape)
+        return biaffine

@@ -28,14 +28,17 @@ class DataLoader(TextLoader):
                 words.append(word)
         word_vocab = text.EmbeddingVocab.from_words(
             words, unknown=word_unknown, dim=word_embed_size,
-            initializer=text.EmbeddingVocab.random_normal)
+            initializer=text.EmbeddingVocab.random_normal,
+            serialize_embeddings=True)
         pretrained_word_vocab = text.EmbeddingVocab(
             unknown=word_unknown, file=word_embed_file, dim=word_embed_size,
             initializer=(text.EmbeddingVocab.random_normal
-                         if word_embed_size is not None else np.zeros))
+                         if word_embed_file is not None else np.zeros),
+            serialize_embeddings=True)
         postag_vocab = text.EmbeddingVocab(
             unknown=word_unknown, dim=postag_embed_size,
-            initializer=text.EmbeddingVocab.random_normal)
+            initializer=text.EmbeddingVocab.random_normal,
+            serialize_embeddings=True)
         self.add_processor(
             'word', word_vocab, preprocess=word_preprocess)
         self.add_processor(
