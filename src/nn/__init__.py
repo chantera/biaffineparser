@@ -142,25 +142,28 @@ class Biaffine(chainer.link.Link):
     def forward(self, x1, x2):
         xp = self.xp
         out_size = self.out_size
-        batch_size, len1, dim1 = x1.shape
+        batch_size, n1, d1 = x1.shape
         if not self.nobias[0]:
-            x1 = F.concat((x1, xp.ones((batch_size, len1, 1),
-                                       dtype=xp.float32)), axis=2)
-            dim1 += 1
-        len2, dim2 = x2.shape[1:]
+            x1 = F.concat(
+                (x1, xp.ones((batch_size, n1, 1), xp.float32)), axis=2)
+            d1 += 1
+        n2, d2 = x2.shape[1:]
         if not self.nobias[1]:
-            x2 = F.concat((x2, xp.ones((batch_size, len2, 1),
-                                       dtype=xp.float32)), axis=2)
-            dim2 += 1
-        x1_reshaped = F.reshape(x1, (batch_size * len1, dim1))
-        W_reshaped = F.reshape(F.transpose(self.W, (0, 2, 1)),
-                               (dim1, out_size * dim2))
-        affine = F.reshape(F.matmul(x1_reshaped, W_reshaped),
-                           (batch_size, len1 * out_size, dim2))
-        biaffine = F.transpose(
-            F.reshape(F.matmul(affine, x2, transb=True),
-                      (batch_size, len1, out_size, len2)),
-            (0, 1, 3, 2))
+            x2 = F.concat(
+                (x2, xp.ones((batch_size, n2, 1), xp.float32)), axis=2)
+            d2 += 1
+        # (B * n1, d1) @ (d1, O * d2) => (B * n1, O * d2)
+        x1W = F.matmul(
+            F.reshape(x1, (batch_size * n1, d1)),
+            F.reshape(F.transpose(self.W, (0, 2, 1)), (d1, out_size * d2)))
+        # (B, n1 * O, d2) @ (B, d2, n2) => (B, n1 * O, n2)
+        x1Wx2 = F.matmul(
+            F.reshape(x1W, (batch_size, n1 * out_size, d2)),
+            x2, transb=True)
+        # => (B, n1, n2, O)
+        y = F.transpose(F.reshape(x1Wx2, (batch_size, n1, out_size, n2)),
+                        (0, 1, 3, 2))
+        assert y.shape == (batch_size, n1, n2, out_size)
         if not self.nobias[2]:
-            biaffine += F.broadcast_to(self.b, biaffine.shape)
-        return biaffine
+            y += F.broadcast_to(self.b, y.shape)
+        return y

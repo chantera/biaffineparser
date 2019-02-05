@@ -77,7 +77,7 @@ NOTE: Weight Initialization comparison
 
 class BiaffineParser(chainer.Chain):
 
-    def __init__(self, n_labels, encoder,
+    def __init__(self, n_rels, encoder,
                  arc_mlp_units=500, rel_mlp_units=100,
                  arc_mlp_dropout=0.0, rel_mlp_dropout=0.0):
         super().__init__()
@@ -108,26 +108,88 @@ class BiaffineParser(chainer.Chain):
                 nobias=(False, True, True),
                 initialW=init_biaf, initial_bias=0.)
             self.biaf_rel = nn.Biaffine(
-                rel_mlp_units[-1], rel_mlp_units[-1], n_labels,
+                rel_mlp_units[-1], rel_mlp_units[-1], n_rels,
                 nobias=(False, False, False),
                 initialW=init_biaf, initial_bias=0.)
 
     def forward(self, words, pretrained_words, postags):
-        hs = self.encoder(words, pretrained_words, postags)  # => [(n, d); B]
-        self._hs = hs
-        hs = F.pad_sequence(hs)  # => (B, n_max, d)
+        self._results = {}
+        # [n; B], [n; B], [n; B] => [(n, d); B]
+        self._hs = self.encoder(words, pretrained_words, postags)
+        self._lengths = [hs_seq.shape[0] for hs_seq in self._hs]
+        hs = F.pad_sequence(self._hs)  # => (B, n_max, d)
         hs_arc_h = self.mlp_arc_head(hs, n_batch_axes=2)
         hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
         hs_rel_d = self.mlp_rel_dep(hs, n_batch_axes=2)
-        print(hs_arc_h.shape, hs_arc_d.shape)
-        print(hs_rel_h.shape, hs_rel_d.shape)
-        logits_arc, logits_rel = (self.biaf_arc(hs_arc_h, hs_arc_d),
-                                  self.biaf_rel(hs_rel_h, hs_rel_d))
-        return logits_arc, logits_rel
+        # => (B, n_max, n_max, 1), (B, n_max, n_max, n_rels)
+        self._logits_arc = self.biaf_arc(hs_arc_h, hs_arc_d)
+        self._logits_rel = self.biaf_rel(hs_rel_h, hs_rel_d)
+        return F.squeeze(self._logits_arc, axis=3), self._logits_rel
 
-    def compute_loss(self, x, y):
-        return chainer.Variable(np.zeros(1))
+    def compute_loss(self, y, t):
+        self._results = _compute_metrics(y, t, self._lengths, False)
+        return self._results['arc_loss'] + self._results['rel_loss']
+
+    def compute_accuracy(self, y, t, use_cache=True):
+        arc_accuracy = self._results.get('arc_accuracy', None)
+        rel_accuracy = self._results.get('rel_accuracy', None)
+        if not use_cache or (arc_accuracy is None and rel_accuracy is None):
+            results = _compute_metrics(y, t, self._lengths, False)
+            arc_accuracy = results.get('arc_accuracy', None)
+            rel_accuracy = results.get('rel_accuracy', None)
+            self._results.update({
+                'arc_accuracy': arc_accuracy,
+                'rel_accuracy': rel_accuracy,
+            })
+        return arc_accuracy, rel_accuracy
+
+
+def _compute_metrics(parsed, gold_batch, lengths,
+                     use_predicted_arcs_for_rels=True):
+    logits_arc, logits_rel = parsed
+    true_arcs, true_rels = zip(*gold_batch)
+    parsed_arcs = true_arcs
+    xp = chainer.cuda.get_array_module(logits_arc)
+
+    b, n_heads, n_deps = logits_arc.shape
+    true_arcs = F.pad_sequence(true_arcs, padding=-1)
+    if xp is not np:
+        true_arcs.to_gpu()
+    logits_arc = F.transpose(logits_arc, (0, 2, 1))
+    logits_arc_flatten = F.reshape(logits_arc, (b * n_deps, n_heads))
+    true_arcs_flatten = F.reshape(true_arcs, (b * n_deps,))
+    arc_loss = F.softmax_cross_entropy(
+        logits_arc_flatten, true_arcs_flatten, ignore_label=-1)
+    arc_accuracy = F.accuracy(
+        logits_arc_flatten, true_arcs_flatten, ignore_label=-1)
+
+    if use_predicted_arcs_for_rels:
+        parsed_arcs = xp.argmax(logits_arc.data, axis=2)
+    logits_rel = \
+        _extract_rel_logits_along_arcs(logits_rel, parsed_arcs, lengths)
+    logits_rel = F.pad_sequence(logits_rel)
+    b, n_deps, n_rels = logits_rel.shape
+    true_rels = F.pad_sequence(true_rels, padding=-1)
+    if xp is not np:
+        true_rels.to_gpu()
+    logits_rel_flatten = F.reshape(logits_rel, (b * n_deps, n_rels))
+    true_rels_flatten = F.reshape(true_rels, (b * n_deps,))
+    rel_loss = F.softmax_cross_entropy(
+        logits_rel_flatten, true_rels_flatten, ignore_label=-1)
+    rel_accuracy = F.accuracy(
+        logits_rel_flatten, true_rels_flatten, ignore_label=-1)
+
+    return {'arc_loss': arc_loss, 'arc_accuracy': arc_accuracy,
+            'rel_loss': rel_loss, 'rel_accuracy': rel_accuracy}
+
+
+def _extract_rel_logits_along_arcs(logits_rel, arcs_batch, lengths):
+    logits_rel = F.transpose(logits_rel, (0, 2, 1, 3))
+    logits_rel = [logits[np.arange(length), arcs[:length]]
+                  for logits, arcs, length
+                  in zip(logits_rel, arcs_batch, lengths)]
+    return logits_rel
 
 
 class Encoder(chainer.Chain):
@@ -175,67 +237,3 @@ class Encoder(chainer.Chain):
     @property
     def out_size(self):
         return self._hidden_size * 2
-
-
-# hack
-chainer.Variable.__int__ = lambda self: int(self.data)
-chainer.Variable.__float__ = lambda self: float(self.data)
-
-
-"""
-def to_device(x, device=None):
-    return chainer.dataset.convert.to_device(device, x)
-
-
-def _update(optimizer, loss):
-    optimizer.target.cleargrads()
-    loss.backward()
-    optimizer.update()
-
-
-def chainer_train_on(*args, **kwargs):
-    chainer.config.train = True
-    chainer.config.enable_backprop = True
-
-
-def chainer_train_off(*args, **kwargs):
-    chainer.config.train = False
-    chainer.config.enable_backprop = False
-
-
-def set_seed(seed):
-    seed = str(seed)
-    os.environ['CHAINER_SEED'] = seed
-    os.environ['CUPY_SEED'] = seed
-
-
-def set_debug(debug):
-    if debug:
-        chainer.config.debug = True
-        chainer.config.type_check = True
-    else:
-        chainer.config.debug = False
-        chainer.config.type_check = False
-
-
-def set_model_to_device(model, device_id=-1):
-    if device_id >= 0:
-        chainer.cuda.get_device_from_id(device_id).use()
-        model.to_gpu()
-    else:
-        model.to_cpu()
-
-
-set_debug(chainer.config.debug)
-chainer.config.use_cudnn = 'auto'
-
-
-config = {
-    'update': _update,
-    'hooks': {
-        TrainEvent.EPOCH_TRAIN_BEGIN: chainer_train_on,
-        TrainEvent.EPOCH_VALIDATE_BEGIN: chainer_train_off,
-    },
-    'callbacks': []
-}
-"""

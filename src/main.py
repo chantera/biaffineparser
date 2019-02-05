@@ -8,6 +8,11 @@ from tqdm import tqdm
 
 import dataset
 import models
+import utils
+
+
+chainer.Variable.__int__ = lambda self: int(self.data)
+chainer.Variable.__float__ = lambda self: float(self.data)
 
 
 def train(train_file, test_file=None,
@@ -28,7 +33,7 @@ def train(train_file, test_file=None,
 
     epoch = 1
     model = models.BiaffineParser(
-        n_labels=len(loader.rel_map),
+        n_rels=len(loader.rel_map),
         encoder=models.Encoder(
             loader.get_embeddings('word'),
             loader.get_embeddings('pre'),
@@ -42,6 +47,7 @@ def train(train_file, test_file=None,
     optimizer = chainer.optimizers.Adam(alpha=0.001)
     optimizer.setup(model)
     trainer = training.Trainer(optimizer, model, loss_func=model.compute_loss)
+    trainer.configure(utils.training_config)
     trainer.add_listener(
         training.listeners.ProgressBar(lambda n: tqdm(total=n)), priority=200)
     trainer.fit(train_dataset, test_dataset, epoch, batch_size)
