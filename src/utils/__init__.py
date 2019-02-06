@@ -1,6 +1,9 @@
 import chainer
 import teras.training as training
 
+from .eval import Evaluator  # NOQA
+from .mst import mst  # NOQA
+
 
 def chainer_train_on(*args, **kwargs):
     chainer.config.train = True

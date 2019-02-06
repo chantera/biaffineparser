@@ -3,6 +3,7 @@ import chainer.functions as F
 import numpy as np
 
 import nn
+from utils import mst
 
 
 """
@@ -113,7 +114,7 @@ class BiaffineParser(chainer.Chain):
                 initialW=init_biaf, initial_bias=0.)
         self.encoder_dropout = encoder_dropout
 
-    def forward(self, words, pretrained_words, postags):
+    def forward(self, words, pretrained_words, postags, *args):
         self._results = {}
         # [n; B], [n; B], [n; B] => [(n, d); B]
         self._hs = self.encoder(words, pretrained_words, postags)
@@ -124,10 +125,16 @@ class BiaffineParser(chainer.Chain):
         hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
         hs_rel_d = self.mlp_rel_dep(hs, n_batch_axes=2)
-        # => (B, n_max, n_max, 1), (B, n_max, n_max, n_rels)
-        self._logits_arc = self.biaf_arc(hs_arc_h, hs_arc_d)
-        self._logits_rel = self.biaf_rel(hs_rel_h, hs_rel_d)
-        return F.squeeze(self._logits_arc, axis=3), self._logits_rel
+        # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
+        self._logits_arc = F.squeeze(self.biaf_arc(hs_arc_d, hs_arc_h), axis=3)
+        self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
+        return self._logits_arc, self._logits_rel
+
+    def parse(self, words, pretrained_words, postags, use_cache=True):
+        with chainer.no_backprop_mode():
+            if len(self._results) == 0 or not use_cache:
+                self.forward(words, pretrained_words, postags)
+            return _parse(self._logits_arc, self._logits_rel, self._lengths)
 
     def compute_loss(self, y, t):
         self._results = _compute_metrics(y, t, self._lengths, False)
@@ -144,7 +151,22 @@ class BiaffineParser(chainer.Chain):
                 'arc_accuracy': arc_accuracy,
                 'rel_accuracy': rel_accuracy,
             })
-        return arc_accuracy, rel_accuracy
+        return arc_accuracy.data, rel_accuracy.data
+
+
+def _parse(logits_arc, logits_rel, lengths):
+    xp = chainer.cuda.get_array_module(logits_arc)
+    mask = xp.full(logits_arc.shape, -float('inf'))
+    for i, length in enumerate(lengths):
+        mask[i, :, :length] = 0.0
+    arc_probs = F.softmax(logits_arc.data + mask, axis=2).data
+    arc_probs = chainer.cuda.to_cpu(arc_probs)
+    rel_probs = F.softmax(logits_rel, axis=3).data
+    rel_probs = chainer.cuda.to_cpu(rel_probs)
+    parsed = [mst(arc_prob[:length, :length], rel_prob[:length, :length])
+              for arc_prob, rel_prob, length
+              in zip(arc_probs, rel_probs, lengths)]
+    return parsed
 
 
 def _compute_metrics(parsed, gold_batch, lengths,
@@ -153,7 +175,7 @@ def _compute_metrics(parsed, gold_batch, lengths,
     true_arcs, true_rels = zip(*gold_batch)
 
     # exclude attachment from the root
-    logits_arc, logits_rel = logits_arc[:, :, 1:], logits_rel[:, :, 1:]
+    logits_arc, logits_rel = logits_arc[:, 1:], logits_rel[:, 1:]
     true_arcs = F.pad_sequence(true_arcs, padding=-1)[:, 1:]
     true_rels = F.pad_sequence(true_rels, padding=-1)[:, 1:]
     lengths = np.array(lengths, dtype=np.int32) - 1
@@ -162,21 +184,22 @@ def _compute_metrics(parsed, gold_batch, lengths,
         true_arcs.to_gpu()
         true_rels.to_gpu()
 
-    b, n_heads, n_deps = logits_arc.shape
-    logits_arc = F.transpose(logits_arc, (0, 2, 1))
+    b, n_deps, n_heads = logits_arc.shape
     logits_arc_flatten = F.reshape(logits_arc, (b * n_deps, n_heads))
     true_arcs_flatten = F.reshape(true_arcs, (b * n_deps,))
     arc_loss = F.softmax_cross_entropy(
         logits_arc_flatten, true_arcs_flatten, ignore_label=-1)
     arc_accuracy = F.accuracy(
         logits_arc_flatten, true_arcs_flatten, ignore_label=-1)
+    arc_accuracy.to_cpu()
 
     if use_predicted_arcs_for_rels:
         parsed_arcs = xp.argmax(logits_arc.data, axis=2)
     else:
         parsed_arcs = true_arcs.data
-    logits_rel = \
-        _extract_rel_logits_along_arcs(logits_rel, parsed_arcs, lengths)
+    logits_rel = [logits[np.arange(length), arcs[:length]]
+                  for logits, arcs, length
+                  in zip(logits_rel, parsed_arcs, lengths)]
     logits_rel = F.pad_sequence(logits_rel)
     b, n_deps, n_rels = logits_rel.shape
     logits_rel_flatten = F.reshape(logits_rel, (b * n_deps, n_rels))
@@ -185,17 +208,10 @@ def _compute_metrics(parsed, gold_batch, lengths,
         logits_rel_flatten, true_rels_flatten, ignore_label=-1)
     rel_accuracy = F.accuracy(
         logits_rel_flatten, true_rels_flatten, ignore_label=-1)
+    rel_accuracy.to_cpu()
 
     return {'arc_loss': arc_loss, 'arc_accuracy': arc_accuracy,
             'rel_loss': rel_loss, 'rel_accuracy': rel_accuracy}
-
-
-def _extract_rel_logits_along_arcs(logits_rel, arcs_batch, lengths):
-    logits_rel = F.transpose(logits_rel, (0, 2, 1, 3))
-    logits_rel = [logits[np.arange(length), arcs[:length]]
-                  for logits, arcs, length
-                  in zip(logits_rel, arcs_batch, lengths)]
-    return logits_rel
 
 
 class Encoder(chainer.Chain):

@@ -56,5 +56,6 @@ class DataLoader(TextLoader):
         heads = np.array(heads, dtype=np.int32)
         rel_ids = np.array(
             [self.rel_map.add(rel) for rel in rels], dtype=np.int32)
-        sample = (word_ids, pre_ids, postag_ids, (heads, rel_ids))
+        sentence = None if self.train else item
+        sample = (word_ids, pre_ids, postag_ids, sentence, (heads, rel_ids))
         return sample

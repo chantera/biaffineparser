@@ -21,6 +21,8 @@ def train(train_file, test_file=None,
           cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
+    logger = Log.getLogger()
+    assert isinstance(logger, Log.AppLogger)
 
     def _load():
         loader = dataset.DataLoader(input_file=train_file)
@@ -32,7 +34,7 @@ def train(train_file, test_file=None,
     loader, train_dataset, test_dataset = \
         cache.load_or_create(key=(git.hash(), train_file, test_file),
                              factory=_load, refresh=refresh_cache,
-                             dir=cache_dir, mkdir=True, logger=Log.getLogger())
+                             dir=cache_dir, mkdir=True, logger=logger)
 
     model = models.BiaffineParser(
         n_rels=len(loader.rel_map),
@@ -68,15 +70,16 @@ def train(train_file, test_file=None,
         training.listeners.ProgressBar(lambda n: tqdm(total=n)), priority=200)
     trainer.add_hook(
         training.BATCH_END, lambda data: _report(data['ys'], data['ts']))
-    # if test_dataset:
-    #     evaluator = eval_module.Evaluator(model, loader.rel_map, test_file)
-    #     trainer.add(evaluator)
+    if test_dataset:
+        trainer.add_listener(
+            utils.Evaluator(model, loader.rel_map, test_file, logger))
     if save_dir is not None:
-        accessid = Log.getLogger().accessid
-        date = Log.getLogger().accesstime.strftime('%Y%m%d')
-        trainer.add_listener(utils.Saver(
-            model, basename="{}-{}".format(date, accessid),
-            directory=save_dir, context=dict(App.context, loader=loader)))
+        accessid = logger.accessid
+        date = logger.accesstime.strftime('%Y%m%d')
+        trainer.add_listener(
+            utils.Saver(model, basename="{}-{}".format(date, accessid),
+                        context=dict(App.context, loader=loader),
+                        directory=save_dir, logger=logger))
     trainer.fit(train_dataset, test_dataset, epoch, batch_size)
 
 
