@@ -151,13 +151,18 @@ def _compute_metrics(parsed, gold_batch, lengths,
                      use_predicted_arcs_for_rels=True):
     logits_arc, logits_rel = parsed
     true_arcs, true_rels = zip(*gold_batch)
-    parsed_arcs = true_arcs
-    xp = chainer.cuda.get_array_module(logits_arc)
 
-    b, n_heads, n_deps = logits_arc.shape
-    true_arcs = F.pad_sequence(true_arcs, padding=-1)
+    # exclude attachment from the root
+    logits_arc, logits_rel = logits_arc[:, :, 1:], logits_rel[:, :, 1:]
+    true_arcs = F.pad_sequence(true_arcs, padding=-1)[:, 1:]
+    true_rels = F.pad_sequence(true_rels, padding=-1)[:, 1:]
+    lengths = np.array(lengths, dtype=np.int32) - 1
+    xp = chainer.cuda.get_array_module(logits_arc)
     if xp is not np:
         true_arcs.to_gpu()
+        true_rels.to_gpu()
+
+    b, n_heads, n_deps = logits_arc.shape
     logits_arc = F.transpose(logits_arc, (0, 2, 1))
     logits_arc_flatten = F.reshape(logits_arc, (b * n_deps, n_heads))
     true_arcs_flatten = F.reshape(true_arcs, (b * n_deps,))
@@ -168,13 +173,12 @@ def _compute_metrics(parsed, gold_batch, lengths,
 
     if use_predicted_arcs_for_rels:
         parsed_arcs = xp.argmax(logits_arc.data, axis=2)
+    else:
+        parsed_arcs = true_arcs.data
     logits_rel = \
         _extract_rel_logits_along_arcs(logits_rel, parsed_arcs, lengths)
     logits_rel = F.pad_sequence(logits_rel)
     b, n_deps, n_rels = logits_rel.shape
-    true_rels = F.pad_sequence(true_rels, padding=-1)
-    if xp is not np:
-        true_rels.to_gpu()
     logits_rel_flatten = F.reshape(logits_rel, (b * n_deps, n_rels))
     true_rels_flatten = F.reshape(true_rels, (b * n_deps,))
     rel_loss = F.softmax_cross_entropy(
