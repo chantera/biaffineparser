@@ -15,17 +15,17 @@ chainer.Variable.__int__ = lambda self: int(self.data)
 chainer.Variable.__float__ = lambda self: float(self.data)
 
 
-def train(train_file, test_file=None,
-          epoch=20, batch_size=32, lr=0.001,
-          device=-1, save_dir=None, seed=None,
-          cache_dir='', refresh_cache=False):
+def train(train_file, test_file=None, embed_file=None,
+          n_epoch=20, batch_size=32, lr=0.001, device=-1, save_dir=None,
+          seed=None, cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
     logger = Log.getLogger()
     assert isinstance(logger, Log.AppLogger)
 
     def _load():
-        loader = dataset.DataLoader(input_file=train_file)
+        loader = dataset.DataLoader(input_file=train_file,
+                                    word_embed_file=embed_file)
         train_dataset = loader.load(train_file, train=True)
         test_dataset = loader.load(test_file, train=False) \
             if test_file is not None else None
@@ -35,6 +35,10 @@ def train(train_file, test_file=None,
         cache.load_or_create(key=(git.hash(), train_file, test_file),
                              factory=_load, refresh=refresh_cache,
                              dir=cache_dir, mkdir=True, logger=logger)
+    del train_dataset._samples[20:]
+    train_dataset._len = len(train_dataset._samples)
+    del test_dataset._samples[10:]
+    test_dataset._len = len(test_dataset._samples)
 
     model = models.BiaffineParser(
         n_rels=len(loader.rel_map),
@@ -80,26 +84,44 @@ def train(train_file, test_file=None,
             utils.Saver(model, basename="{}-{}".format(date, accessid),
                         context=dict(App.context, loader=loader),
                         directory=save_dir, logger=logger))
-    trainer.fit(train_dataset, test_dataset, epoch, batch_size)
+    trainer.fit(train_dataset, test_dataset, n_epoch, batch_size)
 
 
 if __name__ == "__main__":
     App.configure(logdir=App.basedir + '/../logs')
     Log.AppLogger.configure(mkdir=True)
     App.add_command('train', train, {
-        'train_file':
-        arg('--trainfile', type=str, required=True,
-            help='Training data file.'),
-        'test_file':
-        arg('--devfile', type=str, default=None,
-            help='Development data file'),
-        'save_dir':
-        arg('--savedir', type=str, default=None,
-            help='Directory to save the model'),
+        'batch_size':
+        arg('--batchsize', type=int, default=32, metavar='NUM',
+            help='Number of examples in each mini-batch'),
         'cache_dir':
         arg('--cachedir', type=str, default=(App.basedir + '/../cache'),
-            help='Cache directory'),
+            metavar='DIR', help='Cache directory'),
+        'test_file':
+        arg('--devfile', type=str, default=None, metavar='FILE',
+            help='Development data file'),
+        'device':
+        arg('--device', type=int, default=-1, metavar='ID',
+            help='Device ID (negative value indicates CPU)'),
+        'embed_file':
+        arg('--embedfile', type=str, default=None, metavar='FILE',
+            help='Pretrained word embedding file'),
+        'n_epoch':
+        arg('--epoch', type=int, default=20, metavar='NUM',
+            help='Number of sweeps over the dataset to train'),
+        'lr':
+        arg('--lr', type=float, default=0.001, metavar='VALUE',
+            help='Learning Rate'),
         'refresh_cache':
         arg('--refresh', action='store_true', help='Refresh cache.'),
+        'save_dir':
+        arg('--savedir', type=str, default=None, metavar='DIR',
+            help='Directory to save the model'),
+        'seed':
+        arg('--seed', type=int, default=None, metavar='VALUE',
+            help='Random seed'),
+        'train_file':
+        arg('--trainfile', type=str, required=True, metavar='FILE',
+            help='Training data file.'),
     })
     App.run()
