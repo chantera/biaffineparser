@@ -61,6 +61,15 @@ class ExponentialDecayAnnealing(object):
         setattr(optimizer, self.lr_key, lr)
 
 
+class Saver(training.listeners.Saver):
+    name = "chainer.saver"
+
+    def save_model(self, model, suffix=''):
+        file = "{}{}.npz".format(self._basename, suffix)
+        self._logger.info("saving the model to {} ...".format(file))
+        chainer.serializers.save_npz(file, model)
+
+
 set_debug(chainer.config.debug)
 chainer.config.use_cudnn = 'auto'
 

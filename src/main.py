@@ -17,7 +17,8 @@ chainer.Variable.__float__ = lambda self: float(self.data)
 
 def train(train_file, test_file=None,
           epoch=20, batch_size=32, lr=0.001,
-          device=-1, seed=None, cache_dir='', refresh_cache=False):
+          device=-1, save_dir=None, seed=None,
+          cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
 
@@ -67,8 +68,15 @@ def train(train_file, test_file=None,
         training.listeners.ProgressBar(lambda n: tqdm(total=n)), priority=200)
     trainer.add_hook(
         training.BATCH_END, lambda data: _report(data['ys'], data['ts']))
-    # add evaluator
-    # add saver
+    # if test_dataset:
+    #     evaluator = eval_module.Evaluator(model, loader.rel_map, test_file)
+    #     trainer.add(evaluator)
+    if save_dir is not None:
+        accessid = Log.getLogger().accessid
+        date = Log.getLogger().accesstime.strftime('%Y%m%d')
+        trainer.add_listener(utils.Saver(
+            model, basename="{}-{}".format(date, accessid),
+            directory=save_dir, context=dict(App.context, loader=loader)))
     trainer.fit(train_dataset, test_dataset, epoch, batch_size)
 
 
@@ -82,9 +90,12 @@ if __name__ == "__main__":
         'test_file':
         arg('--devfile', type=str, default=None,
             help='Development data file'),
+        'save_dir':
+        arg('--savedir', type=str, default=None,
+            help='Directory to save the model'),
         'cache_dir':
         arg('--cachedir', type=str, default=(App.basedir + '/../cache'),
-            help='Cache directory.', ),
+            help='Cache directory'),
         'refresh_cache':
         arg('--refresh', action='store_true', help='Refresh cache.'),
     })
