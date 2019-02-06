@@ -77,7 +77,7 @@ NOTE: Weight Initialization comparison
 
 class BiaffineParser(chainer.Chain):
 
-    def __init__(self, n_rels, encoder,
+    def __init__(self, n_rels, encoder, encoder_dropout=0.0,
                  arc_mlp_units=500, rel_mlp_units=100,
                  arc_mlp_dropout=0.0, rel_mlp_dropout=0.0):
         super().__init__()
@@ -111,13 +111,15 @@ class BiaffineParser(chainer.Chain):
                 rel_mlp_units[-1], rel_mlp_units[-1], n_rels,
                 nobias=(False, False, False),
                 initialW=init_biaf, initial_bias=0.)
+        self.encoder_dropout = encoder_dropout
 
     def forward(self, words, pretrained_words, postags):
         self._results = {}
         # [n; B], [n; B], [n; B] => [(n, d); B]
         self._hs = self.encoder(words, pretrained_words, postags)
         self._lengths = [hs_seq.shape[0] for hs_seq in self._hs]
-        hs = F.pad_sequence(self._hs)  # => (B, n_max, d)
+        # => (B, n_max, d)
+        hs = nn.dropout(F.pad_sequence(self._hs), self.encoder_dropout)
         hs_arc_h = self.mlp_arc_head(hs, n_batch_axes=2)
         hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
@@ -214,7 +216,7 @@ class Encoder(chainer.Chain):
             embed_list = []
             for weights, fixed in embeddings:
                 s = weights.shape
-                embed_list.append(nn.EmbedID(s[0], s[1], weights, fixed))
+                embed_list.append(nn.EmbedID(s[0], s[1], weights, None, fixed))
             self.embeds = nn.EmbedList(embed_list, dropout=0.0, merge=False)
             if lstm_hidden_size is None:
                 lstm_hidden_size = lstm_in_size

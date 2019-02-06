@@ -1,5 +1,5 @@
 import chainer
-from teras.training.event import TrainEvent
+import teras.training as training
 
 
 def chainer_train_on(*args, **kwargs):
@@ -12,18 +12,18 @@ def chainer_train_off(*args, **kwargs):
     chainer.config.enable_backprop = False
 
 
-def set_random_seed(seed, gpu=-1):
+def set_random_seed(seed, device_id=-1):
     import os
     import random
     import numpy
     random.seed(seed)
     numpy.random.seed(seed)
-    os.environ['CHAINER_SEED'] = os.environ['CUPY_SEED'] = seed
+    os.environ['CHAINER_SEED'] = os.environ['CUPY_SEED'] = str(seed)
     chainer.global_config.cudnn_deterministic = True
-    if gpu >= 0:
+    if device_id >= 0:
         try:
             import cupy
-            cupy.cuda.runtime.setDevice(gpu)
+            cupy.cuda.runtime.setDevice(device_id)
             cupy.random.seed(seed)
         except Exception as e:
             import teras.logging as logging
@@ -39,18 +39,32 @@ def set_debug(debug):
         chainer.config.type_check = False
 
 
-def set_model_to_device(model, device_id=-1):
-    if device_id >= 0:
-        chainer.cuda.get_device_from_id(device_id).use()
-        model.to_gpu()
-    else:
-        model.to_cpu()
+class ExponentialDecayAnnealing(object):
+    name = 'ExponentialDecayAnnealing'
+    call_for_each_param = False
+
+    def __init__(self, initial_lr, decay_rate, decay_step,
+                 staircase=False, lr_key='lr'):
+        self.initial_lr = initial_lr
+        self.decay_rate = decay_rate
+        self.decay_step = decay_step
+        self.staircase = staircase
+        self.lr_key = lr_key
+        self.step = 0
+
+    def __call__(self, optimizer):
+        self.step += 1
+        p = self.step / self.decay_step
+        if self.staircase:
+            p //= 1
+        lr = self.initial_lr * self.decay_rate ** p
+        setattr(optimizer, self.lr_key, lr)
 
 
 set_debug(chainer.config.debug)
 chainer.config.use_cudnn = 'auto'
 
 training_config = {'hooks': {
-    TrainEvent.EPOCH_TRAIN_BEGIN: chainer_train_on,
-    TrainEvent.EPOCH_VALIDATE_BEGIN: chainer_train_off,
+    training.EPOCH_TRAIN_BEGIN: chainer_train_on,
+    training.EPOCH_VALIDATE_BEGIN: chainer_train_off,
 }}
