@@ -63,15 +63,8 @@ class EmbedList(chainer.link.ChainList):
             dropout_each, dropout_all = [0.0] * len(self), self.dropout
         boundaries = list(accumulate(len(x) for x in xs[0][:-1]))
         xp = chainer.cuda.get_array_module(xs[0][0])
-        if self.xp is not xp:
-            if self._cpu:
-                xs = (chainer.cuda.to_cpu(xs_each) for xs_each in xs)
-            else:
-                xs = (chainer.cuda.to_gpu(xs_each, self._device_id)
-                      for xs_each in xs)
-            xp = self.xp
         ys_flatten = [_apply_dropout(
-            embed(xp.concatenate(xs_each, axis=0)), dropout)
+            embed(self.xp.array(xp.concatenate(xs_each, axis=0))), dropout)
             for embed, xs_each, dropout in zip(self, xs, dropout_each)]
         if self.merge:
             ys = F.split_axis(_apply_dropout(
