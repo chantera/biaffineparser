@@ -16,7 +16,7 @@ chainer.Variable.__float__ = lambda self: float(self.data)
 
 
 def train(train_file, test_file=None, embed_file=None,
-          n_epoch=20, batch_size=32, lr=0.001, device=-1, save_dir=None,
+          n_epoch=20, batch_size=5000, lr=2e-3, device=-1, save_dir=None,
           seed=None, cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
@@ -26,8 +26,8 @@ def train(train_file, test_file=None, embed_file=None,
     def _load():
         loader = dataset.DataLoader(input_file=train_file,
                                     word_embed_file=embed_file)
-        train_dataset = loader.load(train_file, train=True)
-        test_dataset = loader.load(test_file, train=False) \
+        train_dataset = loader.load(train_file, train=True, bucketing=True)
+        test_dataset = loader.load(test_file, train=False, bucketing=True) \
             if test_file is not None else None
         return loader, train_dataset, test_dataset
 
@@ -35,10 +35,6 @@ def train(train_file, test_file=None, embed_file=None,
         cache.load_or_create(key=(git.hash(), train_file, test_file),
                              factory=_load, refresh=refresh_cache,
                              dir=cache_dir, mkdir=True, logger=logger)
-    del train_dataset._samples[20:]
-    train_dataset._len = len(train_dataset._samples)
-    del test_dataset._samples[10:]
-    test_dataset._len = len(test_dataset._samples)
 
     model = models.BiaffineParser(
         n_rels=len(loader.rel_map),
@@ -57,7 +53,7 @@ def train(train_file, test_file=None, embed_file=None,
         chainer.cuda.get_device_from_id(device).use()
         model.to_gpu(device)
     optimizer = chainer.optimizers.Adam(
-        alpha=lr, beta1=0.9, beta2=0.999, eps=1e-08)
+        alpha=lr, beta1=0.9, beta2=0.9, eps=1e-12)
     optimizer.setup(model)
     optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
     # optimizer.add_hook(utils.ExponentialDecayAnnealing(
@@ -92,8 +88,8 @@ if __name__ == "__main__":
     Log.AppLogger.configure(mkdir=True)
     App.add_command('train', train, {
         'batch_size':
-        arg('--batchsize', type=int, default=32, metavar='NUM',
-            help='Number of examples in each mini-batch'),
+        arg('--batchsize', type=int, default=5000, metavar='NUM',
+            help='Number of tokens in each mini-batch'),
         'cache_dir':
         arg('--cachedir', type=str, default=(App.basedir + '/../cache'),
             metavar='DIR', help='Cache directory'),
@@ -110,7 +106,7 @@ if __name__ == "__main__":
         arg('--epoch', type=int, default=20, metavar='NUM',
             help='Number of sweeps over the dataset to train'),
         'lr':
-        arg('--lr', type=float, default=0.001, metavar='VALUE',
+        arg('--lr', type=float, default=2e-3, metavar='VALUE',
             help='Learning Rate'),
         'refresh_cache':
         arg('--refresh', action='store_true', help='Refresh cache.'),
