@@ -87,7 +87,7 @@ def train(train_file, test_file=None, embed_file=None,
 
 
 if __name__ == "__main__":
-    App.configure(logdir=App.basedir + '/../logs')
+    App.configure(logdir=App.basedir + '/../logs', loglevel='debug')
     Log.AppLogger.configure(mkdir=True)
     App.add_command('train', train, {
         'batch_size':
