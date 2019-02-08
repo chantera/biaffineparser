@@ -1,4 +1,5 @@
 import chainer
+import numpy as np
 from teras.app import App, arg
 from teras.io import cache
 import teras.training as training
@@ -39,7 +40,7 @@ def train(train_file, test_file=None, embed_file=None,
     model = models.BiaffineParser(
         n_rels=len(loader.rel_map),
         encoder=models.Encoder(
-            loader.get_embeddings('word'),
+            loader.get_embeddings('word', normalize=lambda W: W / np.std(W)),
             loader.get_embeddings('pre'),
             loader.get_embeddings('pos'),
             n_lstm_layers=3,
