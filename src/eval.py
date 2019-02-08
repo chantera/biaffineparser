@@ -25,7 +25,8 @@ class Evaluator(teras.training.event.Listener):
         self.reset()
 
     def reset(self):
-        self._parsed = {'sentences': [], 'heads': [], 'deprels': []}
+        self._parsed = {'sentences': [], 'heads': [], 'deprels': [],
+                        'UAS': None, 'LAS': None}
 
     def append(self, sentences, parsed):
         self._parsed['sentences'].extend(sentences)
@@ -39,15 +40,18 @@ class Evaluator(teras.training.event.Listener):
         with NamedTemporaryFile(mode='w') as f:
             write_conll(f, self._parsed['sentences'],
                         self._parsed['heads'], self._parsed['deprels'])
-            p = exec_eval(f.name, self._gold_file, show_details)
-            if p.returncode != 0:  # retry
+            result = exec_eval(f.name, self._gold_file, show_details)
+            if result['code'] != 0:  # retry
                 with NamedTemporaryFile(mode='w') as gold_f:
                     write_conll(gold_f, self._parsed['sentences'])
-                    p = exec_eval(f.name, gold_f.name, show_details)
-        if p.returncode == 0:
-            message = "[evaluation]\n{}".format(p.stdout.rstrip())
+                    result = exec_eval(f.name, gold_f.name, show_details)
+        if result['code'] == 0:
+            self._parsed['UAS'] = result['UAS']
+            self._parsed['LAS'] = result['LAS']
+            message = "[evaluation]\n{}".format(result['raw'].rstrip())
         else:
-            message = "[evaluation] ERROR: {}".format(p.stderr.rstrip())
+            message = "[evaluation] ERROR({}): {}".format(
+                result['code'], result['raw'].rstrip())
         self._logger.i(message)
 
     def on_batch_begin(self, data):
@@ -64,6 +68,10 @@ class Evaluator(teras.training.event.Listener):
 
     def on_epoch_validate_end(self, data):
         self.report(show_details=False)
+
+    @property
+    def result(self):
+        return self._parsed
 
 
 def write_conll(writer, sentences, heads=None, deprels=None):
@@ -93,10 +101,19 @@ def exec_eval(parsed_file, gold_file, show_details=False):
         command.append('-q')
     print("exec command: {}".format(' '.join(command)), file=sys.stderr)
     option = {}
-    if sys.version_info.minor >= 6:
-        option.update({'encoding': 'utf-8'})
     p = subprocess.run(command,
                        stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE,
                        **option)
-    return p
+    output = (p.stdout if p.returncode == 0 else p.stderr).decode('utf-8')
+    result = {
+        'code': p.returncode,
+        'raw': output,
+        'UAS': None,
+        'LAS': None,
+    }
+    if p.returncode == 0:
+        lines = output.split('\n', 2)[:2]
+        result['LAS'], result['UAS'] = \
+            [float(line.rsplit(' ', 2)[-2]) for line in lines]
+    return result

@@ -73,15 +73,16 @@ def train(train_file, test_file=None, embed_file=None,
     trainer.add_hook(
         training.BATCH_END, lambda data: _report(data['ys'], data['ts']))
     if test_dataset:
-        trainer.add_listener(
-            Evaluator(model, loader.rel_map, test_file, logger))
-    if save_dir is not None:
-        accessid = logger.accessid
-        date = logger.accesstime.strftime('%Y%m%d')
-        trainer.add_listener(
-            utils.Saver(model, basename="{}-{}".format(date, accessid),
-                        context=dict(App.context, loader=loader),
-                        directory=save_dir, logger=logger))
+        evaluator = Evaluator(model, loader.rel_map, test_file, logger)
+        trainer.add_listener(evaluator, priority=128)
+        if save_dir is not None:
+            accessid = logger.accessid
+            date = logger.accesstime.strftime('%Y%m%d')
+            trainer.add_listener(
+                utils.Saver(model, basename="{}-{}".format(date, accessid),
+                            context=dict(App.context, loader=loader),
+                            directory=save_dir, logger=logger, save_best=True,
+                            evaluate=lambda _: evaluator.result['UAS']))
     trainer.fit(train_dataset, test_dataset, n_epoch, batch_size)
 
 
