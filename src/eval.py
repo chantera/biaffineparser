@@ -9,7 +9,7 @@ import teras
 class Evaluator(teras.training.event.Listener):
     PERL = '/usr/bin/perl'
     SCRIPT = os.path.join(
-        os.path.abspath(os.path.dirname(__file__)), 'eval.pl')
+        os.path.abspath(os.path.dirname(__file__)), 'common', 'eval.pl')
     name = "evaluator"
 
     def __init__(self, parser, deprel_map, gold_file, logger=None, **kwargs):

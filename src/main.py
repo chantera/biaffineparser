@@ -7,9 +7,10 @@ import teras.utils.logging as Log
 from teras.utils import git
 from tqdm import tqdm
 
+from common import optimizers, utils
 import dataset
+from eval import Evaluator
 import models
-import utils
 
 
 chainer.Variable.__int__ = lambda self: int(self.data)
@@ -57,7 +58,7 @@ def train(train_file, test_file=None, embed_file=None,
         alpha=lr, beta1=0.9, beta2=0.9, eps=1e-12)
     optimizer.setup(model)
     optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
-    optimizer.add_hook(utils.ExponentialDecayAnnealing(
+    optimizer.add_hook(optimizers.ExponentialDecayAnnealing(
         initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
 
     def _report(y, t):
@@ -73,7 +74,7 @@ def train(train_file, test_file=None, embed_file=None,
         training.BATCH_END, lambda data: _report(data['ys'], data['ts']))
     if test_dataset:
         trainer.add_listener(
-            utils.Evaluator(model, loader.rel_map, test_file, logger))
+            Evaluator(model, loader.rel_map, test_file, logger))
     if save_dir is not None:
         accessid = logger.accessid
         date = logger.accesstime.strftime('%Y%m%d')

@@ -2,8 +2,7 @@ import chainer
 import chainer.functions as F
 import numpy as np
 
-import nn
-from utils import mst
+from common import mst, nn
 
 
 """
@@ -163,7 +162,7 @@ def _parse(logits_arc, logits_rel, lengths):
     arc_probs = chainer.cuda.to_cpu(arc_probs)
     rel_probs = F.softmax(logits_rel, axis=3).data
     rel_probs = chainer.cuda.to_cpu(rel_probs)
-    parsed = [mst(arc_prob[:length, :length], rel_prob[:length, :length])
+    parsed = [mst.mst(arc_prob[:length, :length], rel_prob[:length, :length])
               for arc_prob, rel_prob, length
               in zip(arc_probs, rel_probs, lengths)]
     return parsed
