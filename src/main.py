@@ -56,8 +56,8 @@ def train(train_file, test_file=None, embed_file=None,
         alpha=lr, beta1=0.9, beta2=0.9, eps=1e-12)
     optimizer.setup(model)
     optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
-    # optimizer.add_hook(utils.ExponentialDecayAnnealing(
-    #     initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
+    optimizer.add_hook(utils.ExponentialDecayAnnealing(
+        initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
 
     def _report(y, t):
         arc_accuracy, rel_accuracy = model.compute_accuracy(y, t)

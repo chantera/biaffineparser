@@ -45,6 +45,7 @@ def set_debug(debug):
 class ExponentialDecayAnnealing(object):
     name = 'ExponentialDecayAnnealing'
     call_for_each_param = False
+    timing = 'pre'
 
     def __init__(self, initial_lr, decay_rate, decay_step,
                  staircase=False, lr_key='lr'):
@@ -56,12 +57,12 @@ class ExponentialDecayAnnealing(object):
         self.step = 0
 
     def __call__(self, optimizer):
-        self.step += 1
         p = self.step / self.decay_step
         if self.staircase:
             p //= 1
         lr = self.initial_lr * self.decay_rate ** p
         setattr(optimizer, self.lr_key, lr)
+        self.step += 1
 
 
 class Saver(training.listeners.Saver):
