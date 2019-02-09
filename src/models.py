@@ -20,7 +20,7 @@ NOTE: Weight Initialization comparison
   - B. Original
     - URL: https://github.com/tdozat/Parser-v1
       <tree:0739216129cd39d69997d28cbc4133b360ea3934>
-    - Framework: TensorFlow (<1.0, v0.8?)
+    - Framework: TensorFlow (<v1.0, v0.8?)
       - See: https://github.com/tdozat/Parser-v1/issues/9
     - Initialization:
       - Embeddings (word): zero + pretrained (normalized with std)
@@ -33,7 +33,7 @@ NOTE: Weight Initialization comparison
       <tree:8222eff32bf7bd08d04edfb8087f71836b523aec> (v0.5.0)
       - Path: scripts/parsing/
       - See also: https://github.com/jcyk/Dynet-Biaffine-dependency-parser
-    - Framework: MXNet (latest: v1.5.0b)
+    - Framework: MXNet (>=v1.3.0)
     - Initialization:
       - Embeddings (word): zero + pretrained (normalized with std)
       - Embeddings (postag): random_normal
@@ -226,13 +226,16 @@ class Encoder(chainer.Chain):
                  lstm_dropout=0.0):
         super().__init__()
         with self.init_scope():
+            self._use_pretrained_word = self._use_postag = False
             embeddings = [(word_embeddings, False)]  # (weights, fixed)
             lstm_in_size = word_embeddings.shape[1]
             if pretrained_word_embeddings is not None:
                 embeddings.append((pretrained_word_embeddings, True))
+                self._use_pretrained_word = True
             if postag_embeddings is not None:
                 embeddings.append((postag_embeddings, False))
                 lstm_in_size += postag_embeddings.shape[1]
+                self._use_postag = True
             embed_list = []
             for weights, fixed in embeddings:
                 s = weights.shape
@@ -246,16 +249,65 @@ class Encoder(chainer.Chain):
         self._hidden_size = lstm_hidden_size
 
     def forward(self, *xs):
-        rs_words, rs_words_pretrained, rs_postags = self.embeds(*xs)
         # => [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
-        rs = [F.concat((nn.dropout(rs_word_seq + rs_pre_seq,
-                                   self.embeddings_dropout),
-                        nn.dropout(rs_pos_seq, self.embeddings_dropout)))
-              for rs_word_seq, rs_pre_seq, rs_pos_seq
-              in zip(rs_words, rs_words_pretrained, rs_postags)]
+        rs = self._concat_embeds(self.embeds(*xs))
         # => [(n, d_word + d_pos); B]
         return self.bilstm(hx=None, cx=None, xs=rs)[-1]
+
+    def _concat_embeds(self, embed_outputs):
+        rs_postags = embed_outputs.pop() if self._use_postag else None
+        rs_words_pretrained = embed_outputs.pop() \
+            if self._use_pretrained_word else None
+        rs_words = embed_outputs.pop()
+        if rs_words_pretrained is not None:
+            rs_words = [rs_word_seq + rs_pre_seq for rs_word_seq, rs_pre_seq
+                        in zip(rs_words, rs_words_pretrained)]
+        rs_words, rs_postags = \
+            _embed_dropout(rs_words, rs_postags,
+                           self.embeddings_dropout, self.embeddings_dropout)
+        if rs_postags:
+            rs = [F.concat((rs_word_seq, rs_pos_seq))
+                  for rs_word_seq, rs_pos_seq in zip(rs_words, rs_postags)]
+        else:
+            rs = rs_words
+        return rs
 
     @property
     def out_size(self):
         return self._hidden_size * 2
+
+
+def _embed_dropout(rs_words, rs_postags=None,
+                   word_dropout=0.0, postag_dropout=0.0):
+    """
+    https://github.com/tdozat/Parser-v1/blob/0739216129cd39d69997d28cbc4133b360ea3934/lib/models/nn.py#L58  # NOQA
+    """
+    if not chainer.config.train:
+        return rs_words, rs_postags
+    xp = chainer.cuda.get_array_module(rs_words[0])
+    if rs_postags is not None:
+        ys_words, ys_postags = [], []
+        for rs_word_seq, rs_pos_seq in zip(rs_words, rs_postags):
+            word_mask = xp.float32(1. - word_dropout) \
+                * (xp.random.rand(*rs_word_seq.shape) >= word_dropout)
+            postag_mask = xp.float32(1. - postag_dropout) \
+                * (xp.random.rand(*rs_pos_seq.shape) >= postag_dropout)
+            word_embed_size = rs_word_seq.shape[1]
+            postag_embed_size = rs_pos_seq.shape[1]
+            total_size = word_embed_size + postag_embed_size
+            if word_embed_size == postag_embed_size:
+                total_size += word_embed_size
+            dropped_size = word_mask * word_embed_size \
+                + postag_mask * postag_embed_size
+            if word_embed_size == postag_embed_size:
+                dropped_size += word_mask * postag_mask * word_embed_size
+            scale = total_size / (dropped_size + 1e-12)
+            ys_words.append(rs_word_seq * word_mask * scale)
+            ys_postags.append(rs_pos_seq * postag_mask * scale)
+    else:
+        ys_words, ys_postags = [], None
+        for rs_word_seq in rs_words:
+            word_mask = 1. \
+                * (xp.random.rand(*rs_word_seq.shape) >= word_dropout)
+            ys_words.append(rs_word_seq * word_mask)
+    return ys_words, ys_postags
