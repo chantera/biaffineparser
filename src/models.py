@@ -11,7 +11,7 @@ NOTE: Weight Initialization comparison
     - URL: https://github.com/chantera/biaffineparser
     - Framework: Chainer (v5.2)
     - Initialization:
-      - Embeddings (word): random_normal + pretrained
+      - Embeddings (word): zero + pretrained (normalized with std)
       - Embeddings (postag): random_normal
       - BiLSTMs: `chainer.links.NStepBiLSTM` default
             (W: N(0,sqrt(1/w_in)), b: zero)
@@ -32,6 +32,7 @@ NOTE: Weight Initialization comparison
     - URL: https://github.com/dmlc/gluon-nlp
       <tree:8222eff32bf7bd08d04edfb8087f71836b523aec> (v0.5.0)
       - Path: scripts/parsing/
+      - See also: https://github.com/jcyk/Dynet-Biaffine-dependency-parser
     - Framework: MXNet (latest: v1.5.0b)
     - Initialization:
       - Embeddings (word): zero + pretrained (normalized with std)
