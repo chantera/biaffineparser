@@ -246,6 +246,13 @@ class Encoder(chainer.Chain):
             self.embeds = nn.EmbedList(embed_list, dropout=0.0, merge=False)
             if lstm_hidden_size is None:
                 lstm_hidden_size = lstm_in_size
+            # NOTE(chantera): The original implementation uses BiLSTM
+            # with variational dropout for inputs and hidden states.
+            # The same dropout is applied by the following code:
+            # ---
+            # self.bilstm = nn.NStepBiLSTM(
+            #     n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout,
+            #     recurrent_dropout=lstm_dropout, use_variational_dropout=True)
             self.bilstm = chainer.links.NStepBiLSTM(
                 n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout)
         self.embeddings_dropout = embeddings_dropout
