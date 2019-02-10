@@ -5,6 +5,19 @@ import chainer.functions as F
 import numpy as np
 
 
+def _apply_dropout(x, ratio=.5, **kwargs):
+    """Disable dropout when ratio == 0.0."""
+    if chainer.configuration.config.train and ratio > 0.0:
+        return F.dropout(x, ratio, **kwargs)
+    out, mask = chainer.as_variable(x), None
+    if kwargs.get('return_mask', False):
+        return out, mask
+    return out
+
+
+dropout = _apply_dropout
+
+
 class EmbedID(chainer.link.Link):
     """Same as `chainer.links.EmbedID` except for fixing pretrained weight."""
 
@@ -105,16 +118,6 @@ class MLP(chainer.link.ChainList):
             return _apply_dropout(h, self.dropout)
 
 
-def _apply_dropout(x, ratio=.5, **kwargs):
-    """Disable dropout when ratio == 0.0."""
-    if chainer.configuration.config.train and ratio > 0.0:
-        return F.dropout(x, ratio, **kwargs)
-    return chainer.as_variable(x)
-
-
-dropout = _apply_dropout
-
-
 class Biaffine(chainer.link.Link):
 
     def __init__(self, left_size, right_size, out_size,
@@ -167,3 +170,180 @@ class Biaffine(chainer.link.Link):
         if not self.nobias[2]:
             y += F.broadcast_to(self.b, y.shape)
         return y
+
+
+def _n_step_rnn_impl(
+        f, n_layers, dropout_ratio, hx, cx, ws, bs, xs, use_bi_direction,
+        recurrent_dropout_ratio, use_variational_dropout):
+    direction = 2 if use_bi_direction else 1
+    hx = F.separate(hx)
+    use_cell = cx is not None
+    if use_cell:
+        cx = F.separate(cx)
+    else:
+        cx = [None] * len(hx)
+
+    xs_next = xs
+    hy = []
+    cy = []
+    # NOTE(chantera):
+    # Unlike Chainer, dropout is applied to inputs of the first layer
+    # when using variational dropout.
+    for layer in range(n_layers):
+        # Forward RNN
+        idx = direction * layer
+        h_mask = None
+        if use_variational_dropout:
+            x_mask = _apply_dropout(
+                xs_next[0].data, recurrent_dropout_ratio, return_mask=True)[1]
+            h_mask = _apply_dropout(
+                hx[idx].data, recurrent_dropout_ratio, return_mask=True)[1]
+            xs = _dropout_sequence(xs_next, dropout_ratio, x_mask)
+        elif layer == 0:
+            xs = xs_next
+        else:
+            xs = _dropout_sequence(xs_next, dropout_ratio)
+        h, c, h_forward = _one_directional_loop(
+            f, xs, hx[idx], cx[idx], ws[idx], bs[idx],
+            lambda h: _apply_dropout(h, recurrent_dropout_ratio, mask=h_mask))
+        hy.append(h)
+        cy.append(c)
+
+        if use_bi_direction:
+            # Backward RNN
+            idx = direction * layer + 1
+            h_mask = None
+            if use_variational_dropout:
+                x_mask = _apply_dropout(
+                    xs_next[0].data, recurrent_dropout_ratio,
+                    return_mask=True)[1]
+                h_mask = _apply_dropout(
+                    hx[idx].data, recurrent_dropout_ratio, return_mask=True)[1]
+                xs = _dropout_sequence(xs_next, dropout_ratio, x_mask)
+            elif layer == 0:
+                xs = xs_next
+            else:
+                xs = _dropout_sequence(xs_next, dropout_ratio)
+            h, c, h_backward = _one_directional_loop(
+                f, reversed(xs), hx[idx], cx[idx], ws[idx], bs[idx],
+                lambda h: _apply_dropout(
+                    h, recurrent_dropout_ratio, mask=h_mask))
+            h_backward.reverse()
+            # Concat
+            xs_next = [F.concat([hfi, hbi], axis=1)
+                       for hfi, hbi in zip(h_forward, h_backward)]
+            hy.append(h)
+            cy.append(c)
+        else:
+            # Uni-directional RNN
+            xs_next = h_forward
+
+    ys = xs_next
+    hy = F.stack(hy)
+    if use_cell:
+        cy = F.stack(cy)
+    else:
+        cy = None
+    return hy, cy, tuple(ys)
+
+
+def _one_directional_loop(f, xs, h, c, w, b, h_dropout):
+    h_list = []
+    for t, x in enumerate(xs):
+        h = h_dropout(h)
+        batch = len(x)
+        need_split = len(h) > batch
+        if need_split:
+            h, h_rest = F.split_axis(h, [batch], axis=0)
+            if c is not None:
+                c, c_rest = F.split_axis(c, [batch], axis=0)
+
+        h, c = f(x, h, c, w, b)
+        h_list.append(h)
+
+        if need_split:
+            h = F.concat([h, h_rest], axis=0)
+            if c is not None:
+                c = F.concat([c, c_rest], axis=0)
+    return h, c, h_list
+
+
+def _dropout_sequence(xs, dropout_ratio, mask=None):
+    if mask is not None:
+        return [_apply_dropout(
+            x, dropout_ratio, mask=mask[:x.shape[0]]) for x in xs]
+    else:
+        return [_apply_dropout(x, dropout_ratio) for x in xs]
+
+
+def _n_step_lstm_base(
+        n_layers, dropout_ratio, hx, cx, ws, bs, xs, use_bi_direction,
+        recurrent_dropout_ratio=0.0, use_variational_dropout=False, **kwargs):
+    if recurrent_dropout_ratio <= 0.0 and not use_variational_dropout:
+        return F.connection.n_step_lstm.n_step_lstm_base(
+            n_layers, dropout_ratio, hx, cx, ws, bs, xs, use_bi_direction,
+            **kwargs)
+    return _n_step_rnn_impl(
+        F.connection.n_step_lstm._lstm,
+        n_layers, dropout_ratio, hx, cx, ws, bs, xs, use_bi_direction,
+        recurrent_dropout_ratio, use_variational_dropout)
+
+
+def n_step_lstm(
+        n_layers, dropout_ratio, hx, cx, ws, bs, xs,
+        recurrent_dropout_ratio=0.0, use_variational_dropout=False, **kwargs):
+    return _n_step_lstm_base(
+        n_layers, dropout_ratio, hx, cx, ws, bs, xs, False,
+        recurrent_dropout_ratio, use_variational_dropout, **kwargs)
+
+
+def n_step_bilstm(
+        n_layers, dropout_ratio, hx, cx, ws, bs, xs,
+        recurrent_dropout_ratio=0.0, use_variational_dropout=False, **kwargs):
+    return _n_step_lstm_base(
+        n_layers, dropout_ratio, hx, cx, ws, bs, xs, True,
+        recurrent_dropout_ratio, use_variational_dropout, **kwargs)
+
+
+class NStepRNNBase(chainer.links.connection.n_step_rnn.NStepRNNBase):
+
+    def __init__(self, n_layers, in_size, out_size, dropout,
+                 recurrent_dropout=0.0, use_variational_dropout=False,
+                 **kwargs):
+        self.recurrent_dropout = recurrent_dropout
+        self.use_variational_dropout = use_variational_dropout
+        super().__init__(n_layers, in_size, out_size, dropout, **kwargs)
+
+
+class NStepLSTMBase(NStepRNNBase):
+    n_weights = 8
+
+    def forward(self, hx, cx, xs, **kwargs):
+        (hy, cy), ys = self._call([hx, cx], xs, **kwargs)
+        return hy, cy, ys
+
+
+class NStepLSTM(NStepLSTMBase):
+    use_bi_direction = False
+
+    def rnn(self, *args):
+        assert len(args) == 7
+        return n_step_lstm(
+            *args, self.recurrent_dropout, self.use_variational_dropout)
+
+    @property
+    def n_cells(self):
+        return 2
+
+
+class NStepBiLSTM(NStepLSTMBase):
+    use_bi_direction = True
+
+    def rnn(self, *args):
+        assert len(args) == 7
+        return n_step_bilstm(
+            *args, self.recurrent_dropout, self.use_variational_dropout)
+
+    @property
+    def n_cells(self):
+        return 2
