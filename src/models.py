@@ -86,23 +86,25 @@ class BiaffineParser(chainer.Chain):
             arc_mlp_units = [arc_mlp_units]
         if isinstance(rel_mlp_units, int):
             rel_mlp_units = [rel_mlp_units]
-        mlp_activation = F.leaky_relu
         with self.init_scope():
+            def mlp_activate(x):
+                # return F.maximum(0.1 * x, x)  # original
+                return F.leaky_relu(x, slope=0.1)
             self.encoder = encoder
             h_dim = self.encoder.out_size
             init_mlp = chainer.initializers.HeNormal(
                 scale=np.sqrt(0.5), fan_option='fan_out')
             self.mlp_arc_head = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activation, arc_mlp_dropout, initialW=init_mlp,
+                h_dim, u, mlp_activate, arc_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for u in arc_mlp_units])
             self.mlp_arc_dep = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activation, arc_mlp_dropout, initialW=init_mlp,
+                h_dim, u, mlp_activate, arc_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for u in arc_mlp_units])
             self.mlp_rel_head = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activation, rel_mlp_dropout, initialW=init_mlp,
+                h_dim, u, mlp_activate, rel_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for u in rel_mlp_units])
             self.mlp_rel_dep = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activation, rel_mlp_dropout, initialW=init_mlp,
+                h_dim, u, mlp_activate, rel_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for u in rel_mlp_units])
             init_biaf = chainer.initializers.Zero()
             self.biaf_arc = nn.Biaffine(
