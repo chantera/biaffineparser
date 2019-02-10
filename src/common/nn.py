@@ -186,9 +186,8 @@ def _n_step_rnn_impl(
     xs_next = xs
     hy = []
     cy = []
-    # NOTE(chantera):
-    # Unlike Chainer, dropout is applied to inputs of the first layer
-    # when using variational dropout.
+    # NOTE(chantera): Unlike Chainer, dropout is applied to inputs of the first
+    # layer when using variational dropout.
     for layer in range(n_layers):
         # Forward RNN
         idx = direction * layer

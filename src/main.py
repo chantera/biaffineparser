@@ -112,7 +112,7 @@ if __name__ == "__main__":
         arg('--lr', type=float, default=2e-3, metavar='VALUE',
             help='Learning Rate'),
         'refresh_cache':
-        arg('--refresh', action='store_true', help='Refresh cache.'),
+        arg('--refresh', '-r', action='store_true', help='Refresh cache.'),
         'save_dir':
         arg('--savedir', type=str, default=None, metavar='DIR',
             help='Directory to save the model'),
