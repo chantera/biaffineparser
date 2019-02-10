@@ -283,6 +283,8 @@ class Encoder(chainer.Chain):
 def _embed_dropout(rs_words, rs_postags=None,
                    word_dropout=0.0, postag_dropout=0.0):
     """
+    Dropout with scaling to compensate dropped one.
+    This is not equivalent to the original.
     https://github.com/tdozat/Parser-v1/blob/0739216129cd39d69997d28cbc4133b360ea3934/lib/models/nn.py#L58  # NOQA
     """
     if not chainer.config.train:
@@ -291,26 +293,18 @@ def _embed_dropout(rs_words, rs_postags=None,
     if rs_postags is not None:
         ys_words, ys_postags = [], []
         for rs_word_seq, rs_pos_seq in zip(rs_words, rs_postags):
-            word_mask = xp.float32(1. - word_dropout) \
-                * (xp.random.rand(*rs_word_seq.shape) >= word_dropout)
-            postag_mask = xp.float32(1. - postag_dropout) \
-                * (xp.random.rand(*rs_pos_seq.shape) >= postag_dropout)
-            word_embed_size = rs_word_seq.shape[1]
-            postag_embed_size = rs_pos_seq.shape[1]
-            total_size = word_embed_size + postag_embed_size
-            if word_embed_size == postag_embed_size:
-                total_size += word_embed_size
-            dropped_size = word_mask * word_embed_size \
-                + postag_mask * postag_embed_size
-            if word_embed_size == postag_embed_size:
-                dropped_size += word_mask * postag_mask * word_embed_size
-            scale = total_size / (dropped_size + 1e-12)
-            ys_words.append(rs_word_seq * word_mask * scale)
-            ys_postags.append(rs_pos_seq * postag_mask * scale)
+            ys_word_seq, word_mask = \
+                nn.dropout(rs_word_seq, word_dropout, return_mask=True)
+            ys_pos_seq, postag_mask = \
+                nn.dropout(rs_pos_seq, postag_dropout, return_mask=True)
+            if word_mask is not None and postag_mask is not None:
+                scale = 2. / (word_mask + postag_mask + 1e-12)
+                ys_word_seq *= scale
+                ys_pos_seq *= scale
+            ys_words.append(ys_word_seq)
+            ys_postags.append(ys_pos_seq)
     else:
-        ys_words, ys_postags = [], None
-        for rs_word_seq in rs_words:
-            word_mask = 1. \
-                * (xp.random.rand(*rs_word_seq.shape) >= word_dropout)
-            ys_words.append(rs_word_seq * word_mask)
+        ys_words = [nn.dropout(rs_word_seq, word_dropout)
+                    for rs_word_seq in rs_words]
+        ys_postags = None
     return ys_words, ys_postags
