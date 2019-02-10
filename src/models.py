@@ -15,8 +15,8 @@ NOTE: Weight Initialization comparison
       - Embeddings (postag): random_normal
       - BiLSTMs: `chainer.links.NStepBiLSTM` default
             (W: N(0,sqrt(1/w_in)), b: zero)
-      - MLPs: W: uniform(-s,s) where s=sqrt(1/fan_in), b: zero
-      - Biffines: U,W1,W2: xavier_uniform, b: zero
+      - MLPs: W: N(0,sqrt(1/w_out)), b: zero
+      - Biaffines: zero
   - B. Original
     - URL: https://github.com/tdozat/Parser-v1
       <tree:0739216129cd39d69997d28cbc4133b360ea3934>
@@ -90,7 +90,8 @@ class BiaffineParser(chainer.Chain):
         with self.init_scope():
             self.encoder = encoder
             h_dim = self.encoder.out_size
-            init_mlp = chainer.initializers.HeUniform(scale=np.sqrt(1. / 6.))
+            init_mlp = chainer.initializers.HeNormal(
+                scale=np.sqrt(0.5), fan_option='fan_out')
             self.mlp_arc_head = nn.MLP([nn.MLP.Layer(
                 h_dim, u, mlp_activation, arc_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for u in arc_mlp_units])
@@ -103,7 +104,7 @@ class BiaffineParser(chainer.Chain):
             self.mlp_rel_dep = nn.MLP([nn.MLP.Layer(
                 h_dim, u, mlp_activation, rel_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for u in rel_mlp_units])
-            init_biaf = chainer.initializers.GlorotUniform()
+            init_biaf = chainer.initializers.Zero()
             self.biaf_arc = nn.Biaffine(
                 arc_mlp_units[-1], arc_mlp_units[-1], 1,
                 nobias=(False, True, True),
