@@ -276,8 +276,8 @@ class Encoder(chainer.Chain):
             _embed_dropout(rs_words, rs_postags,
                            self.embeddings_dropout, self.embeddings_dropout)
         if rs_postags:
-            rs = [F.concat((rs_word_seq, rs_pos_seq))
-                  for rs_word_seq, rs_pos_seq in zip(rs_words, rs_postags)]
+            rs = [F.concat((rs_word_seq, rs_postag_seq))
+                  for rs_word_seq, rs_postag_seq in zip(rs_words, rs_postags)]
         else:
             rs = rs_words
         return rs
@@ -290,28 +290,34 @@ class Encoder(chainer.Chain):
 def _embed_dropout(rs_words, rs_postags=None,
                    word_dropout=0.0, postag_dropout=0.0):
     """
-    Dropout with scaling to compensate dropped one.
-    This is not equivalent to the original.
+    Drop words and tags with scaling to compensate the dropped one.
     https://github.com/tdozat/Parser-v1/blob/0739216129cd39d69997d28cbc4133b360ea3934/lib/models/nn.py#L58  # NOQA
     """
     if not chainer.config.train:
         return rs_words, rs_postags
     xp = chainer.cuda.get_array_module(rs_words[0])
+    mask_shape = (len(rs_words), max(seq.shape[0] for seq in rs_words), 1)
+    word_mask = xp.float32(1. - word_dropout) \
+        * (xp.random.rand(*mask_shape) >= word_dropout)
     if rs_postags is not None:
-        ys_words, ys_postags = [], []
-        for rs_word_seq, rs_pos_seq in zip(rs_words, rs_postags):
-            ys_word_seq, word_mask = \
-                nn.dropout(rs_word_seq, word_dropout, return_mask=True)
-            ys_pos_seq, postag_mask = \
-                nn.dropout(rs_pos_seq, postag_dropout, return_mask=True)
-            if word_mask is not None and postag_mask is not None:
-                scale = 2. / (word_mask + postag_mask + 1e-12)
-                ys_word_seq *= scale
-                ys_pos_seq *= scale
-            ys_words.append(ys_word_seq)
-            ys_postags.append(ys_pos_seq)
+        postag_mask = xp.float32(1. - postag_dropout) \
+            * (xp.random.rand(*mask_shape) >= postag_dropout)
+        word_embed_size = rs_words[0].shape[0]
+        postag_embed_size = rs_postags[0].shape[0]
+        embed_size = word_embed_size + postag_embed_size
+        dropped_sizes = word_mask * word_embed_size \
+            + postag_mask * postag_embed_size
+        if word_embed_size == postag_embed_size:
+            embed_size += word_embed_size
+            dropped_sizes += word_mask * postag_mask * word_embed_size
+        scale = embed_size / (dropped_sizes + 1e-12)
+        word_mask *= scale
+        postag_mask *= scale
+    ys_words = [rs_word_seq * word_mask[i, :rs_word_seq.shape[0]]
+                for i, rs_word_seq in enumerate(rs_words)]
+    if rs_postags is not None:
+        ys_postags = [rs_postag_seq * postag_mask[i, :rs_postag_seq.shape[0]]
+                      for i, rs_postag_seq in enumerate(rs_postags)]
     else:
-        ys_words = [nn.dropout(rs_word_seq, word_dropout)
-                    for rs_word_seq in rs_words]
         ys_postags = None
     return ys_words, ys_postags
