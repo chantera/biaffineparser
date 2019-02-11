@@ -18,8 +18,8 @@ chainer.Variable.__float__ = lambda self: float(self.data)
 
 
 def train(train_file, test_file=None, embed_file=None,
-          n_epoch=20, batch_size=5000, lr=2e-3, device=-1, save_dir=None,
-          seed=None, cache_dir='', refresh_cache=False):
+          n_epoch=20, batch_size=5000, lr=2e-3, dropout_ratio=0.33, device=-1,
+          save_dir=None, seed=None, cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
     logger = Log.getLogger()
@@ -46,11 +46,11 @@ def train(train_file, test_file=None, embed_file=None,
             loader.get_embeddings('pos'),
             n_lstm_layers=3,
             lstm_hidden_size=400,
-            embeddings_dropout=0.33,
-            lstm_dropout=0.33),
-        encoder_dropout=0.33,
+            embeddings_dropout=dropout_ratio,
+            lstm_dropout=dropout_ratio),
+        encoder_dropout=dropout_ratio,
         arc_mlp_units=500, rel_mlp_units=100,
-        arc_mlp_dropout=0.33, rel_mlp_dropout=0.33)
+        arc_mlp_dropout=dropout_ratio, rel_mlp_dropout=dropout_ratio)
     if device >= 0:
         chainer.cuda.get_device_from_id(device).use()
         model.to_gpu(device)
@@ -96,6 +96,9 @@ if __name__ == "__main__":
         'cache_dir':
         arg('--cachedir', type=str, default=(App.basedir + '/../cache'),
             metavar='DIR', help='Cache directory'),
+        'dropout_ratio':
+        arg('--dropout', type=float, default=0.33, metavar='PROB',
+            help='Dropout ratio'),
         'test_file':
         arg('--devfile', type=str, default=None, metavar='FILE',
             help='Development data file'),
@@ -110,7 +113,7 @@ if __name__ == "__main__":
             help='Number of sweeps over the dataset to train'),
         'lr':
         arg('--lr', type=float, default=2e-3, metavar='VALUE',
-            help='Learning Rate'),
+            help='Learning rate'),
         'refresh_cache':
         arg('--refresh', '-r', action='store_true', help='Refresh cache.'),
         'save_dir':
