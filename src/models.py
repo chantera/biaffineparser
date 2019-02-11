@@ -256,12 +256,14 @@ class Encoder(chainer.Chain):
             self.bilstm = chainer.links.NStepBiLSTM(
                 n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout)
         self.embeddings_dropout = embeddings_dropout
+        self.lstm_dropout = lstm_dropout
         self._hidden_size = lstm_hidden_size
 
     def forward(self, *xs):
-        # => [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
-        rs = self._concat_embeds(self.embeds(*xs))
+        # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
         # => [(n, d_word + d_pos); B]
+        rs = self._concat_embeds(self.embeds(*xs))
+        rs = [nn.dropout(rs_seq, self.lstm_dropout) for rs_seq in rs]
         return self.bilstm(hx=None, cx=None, xs=rs)[-1]
 
     def _concat_embeds(self, embed_outputs):
