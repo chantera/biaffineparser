@@ -1,6 +1,6 @@
 # biaffineparser: Deep Biaffine Attention Dependency Parser
 
-biaffineparser is chainer implementation for Deep Biaffine Attention for Neural Dependency Parsing.
+biaffineparser is a chainer implementation of "[Deep Biaffine Attention for Neural Dependency Parsing](https://arxiv.org/abs/1611.01734)."
 
 ## Installation
 
@@ -59,13 +59,9 @@ python3 src/main.py train --trainfile=$DATA/train.conll --devfile=$DATA/dev.conl
 python3 src/main.py test --testfile=$DATA/test.conll --modelfile=./models/[yyyymmdd]-[id].npz --device=0
 ```
 
-## Notes
-
-The pytorch model weight initialization and GPU computation have not been completed yet.
-
 ### Performance
 
-The model implemented by chainer achieves **UAS: 95.50** and **LAS: 93.79** in wsj 23 (test set) in PTB-SD 3.3.0 with the reported hyperparameter settings.
+The model achieves **UAS: 95.50** and **LAS: 93.79** in wsj 23 (test set) in PTB-SD 3.3.0 with the reported hyperparameters.
 
 ## References
 
