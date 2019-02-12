@@ -25,8 +25,7 @@ usage: main.py train [-h] [--batchsize NUM] [--cachedir DIR] [--devfile FILE]
 optional arguments:
   -h, --help        show this help message and exit
   --batchsize NUM   Number of tokens in each mini-batch (default: 5000)
-  --cachedir DIR    Cache directory (default: /home/hiroki/work/repos/github.c
-                    om/chantera/biaffineparser/src/../cache)
+  --cachedir DIR    Cache directory (default: cache)
   --devfile FILE    Development data file (default: None)
   --device ID       Device ID (negative value indicates CPU) (default: -1)
   --dropout PROB    Dropout ratio (default: 0.33)
