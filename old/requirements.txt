@@ -1,3 +1,0 @@
-chainer==3.0.0
-numpy>=1.13.1
--e git+https://github.com/chantera/teras@v0.1.3#egg=teras
