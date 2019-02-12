@@ -93,6 +93,7 @@ def test(
     pbar.init(len(test_dataset))
     evaluator = Evaluator(
         model, context.loader.rel_map, test_file, Log.getLogger())
+    utils.chainer_train_off()
     for batch in test_dataset.batch(
             context.batch_size, colwise=True, shuffle=False):
         xs, ts = batch[:-1], batch[-1]
