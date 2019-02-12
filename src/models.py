@@ -116,9 +116,10 @@ class BiaffineParser(chainer.Chain):
                 nobias=(False, False, False),
                 initialW=init_biaf, initial_bias=0.)
         self.encoder_dropout = encoder_dropout
+        self._results = {}
 
     def forward(self, words, pretrained_words, postags, *args):
-        self._results = {}
+        self._results.clear()
         # [n; B], [n; B], [n; B] => [(n, d); B]
         self._hs = self.encoder(words, pretrained_words, postags)
         self._lengths = [hs_seq.shape[0] for hs_seq in self._hs]

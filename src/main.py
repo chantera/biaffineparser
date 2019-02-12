@@ -38,19 +38,7 @@ def train(train_file, test_file=None, embed_file=None,
                              factory=_load, refresh=refresh_cache,
                              dir=cache_dir, mkdir=True, logger=logger)
 
-    model = models.BiaffineParser(
-        n_rels=len(loader.rel_map),
-        encoder=models.Encoder(
-            loader.get_embeddings('word'),
-            loader.get_embeddings('pre', normalize=lambda W: W / np.std(W)),
-            loader.get_embeddings('pos'),
-            n_lstm_layers=3,
-            lstm_hidden_size=400,
-            embeddings_dropout=dropout_ratio,
-            lstm_dropout=dropout_ratio),
-        encoder_dropout=dropout_ratio,
-        arc_mlp_units=500, rel_mlp_units=100,
-        arc_mlp_dropout=dropout_ratio, rel_mlp_dropout=dropout_ratio)
+    model = _build_parser(loader, dropout_ratio=dropout_ratio)
     if device >= 0:
         chainer.cuda.get_device_from_id(device).use()
         model.to_gpu(device)
@@ -84,6 +72,53 @@ def train(train_file, test_file=None, embed_file=None,
                             directory=save_dir, logger=logger, save_best=True,
                             evaluate=lambda _: evaluator.result['UAS']))
     trainer.fit(train_dataset, test_dataset, n_epoch, batch_size)
+
+
+def test(
+        model_file,
+        test_file,
+        device=-1):
+    context = utils.Saver.load_context(model_file)
+    if context.seed is not None:
+        utils.set_random_seed(context.seed, device)
+
+    test_dataset = context.loader.load(test_file, train=False, bucketing=True)
+    model = _build_parser(**dict(context))
+    chainer.serializers.load_npz(model_file, model)
+    if device >= 0:
+        chainer.cuda.get_device_from_id(device).use()
+        model.to_gpu(device)
+
+    pbar = training.listeners.ProgressBar(lambda n: tqdm(total=n))
+    pbar.init(len(test_dataset))
+    evaluator = Evaluator(
+        model, context.loader.rel_map, test_file, Log.getLogger())
+    for batch in test_dataset.batch(
+            context.batch_size, colwise=True, shuffle=False):
+        xs, ts = batch[:-1], batch[-1]
+        parsed = model.parse(*xs)
+        evaluator.append([tokens[1:] for tokens in xs[-1]], parsed)
+        pbar.update(len(ts))
+    evaluator.report(show_details=False)
+
+
+def _build_parser(loader, **kwargs):
+    parser = models.BiaffineParser(
+        n_rels=len(loader.rel_map),
+        encoder=models.Encoder(
+            loader.get_embeddings('word'),
+            loader.get_embeddings('pre', normalize=lambda W: W / np.std(W)),
+            loader.get_embeddings('pos'),
+            n_lstm_layers=kwargs.get('n_lstm_layers', 3),
+            lstm_hidden_size=kwargs.get('lstm_hidden_size', 400),
+            embeddings_dropout=kwargs.get('dropout_ratio', 0.33),
+            lstm_dropout=kwargs.get('dropout_ratio', 0.33)),
+        encoder_dropout=kwargs.get('dropout_ratio', 0.33),
+        arc_mlp_units=kwargs.get('arc_mlp_units', 500),
+        rel_mlp_units=kwargs.get('rel_mlp_units', 100),
+        arc_mlp_dropout=kwargs.get('dropout_ratio', 0.33),
+        rel_mlp_dropout=kwargs.get('dropout_ratio', 0.33))
+    return parser
 
 
 if __name__ == "__main__":
@@ -125,5 +160,16 @@ if __name__ == "__main__":
         'train_file':
         arg('--trainfile', type=str, required=True, metavar='FILE',
             help='Training data file.'),
+    })
+    App.add_command('test', test, {
+        'device':
+        arg('--device', type=int, default=-1, metavar='ID',
+            help='Device ID (negative value indicates CPU)'),
+        'model_file':
+        arg('--modelfile', type=str, required=True, metavar='FILE',
+            help='Trained model file'),
+        'test_file':
+        arg('--testfile', type=str, required=True, metavar='FILE',
+            help='Development data file'),
     })
     App.run()
