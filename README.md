@@ -1,6 +1,6 @@
 # biaffineparser: Deep Biaffine Attention Dependency Parser
 
-biaffineparser is chainer/pytorch implementation for Deep Biaffine Attention for Neural Dependency Parsing.
+biaffineparser is a chainer implementation of "[Deep Biaffine Attention for Neural Dependency Parsing](https://arxiv.org/abs/1611.01734)."
 
 ## Installation
 
@@ -12,67 +12,56 @@ $ cd biaffineparser
 $ pip install -r requirements.txt
 ```
 
-For backend computation with pytorch, you need to install pytorch version 0.2.0.  
-
 ## Usage
 
 ### Training
 
 ```sh
-usage: parser.py train [-h] [--backend {chainer,pytorch}]
-                       [--batchsize BATCH_SIZE] [--embedfile EMBED_FILE]
-                       [--embedsize EMBED_SIZE] [--epoch N_EPOCH] [--gpu GPU]
-                       [--lr LR] [--model MODEL_PARAMS] [--out SAVE_TO]
-                       [--seed SEED] --trainfile TRAIN_FILE
-                       [--validfile TEST_FILE]
+usage: main.py train [-h] [--batchsize NUM] [--cachedir DIR] [--devfile FILE]
+                     [--device ID] [--dropout PROB] [--embedfile FILE]
+                     [--epoch NUM] [--lr VALUE] [--refresh] [--savedir DIR]
+                     [--seed VALUE] --trainfile FILE
 
 optional arguments:
-  -h, --help            show this help message and exit
-  --backend {chainer,pytorch}
-                        Backend framework for computation (default: chainer)
-  --batchsize BATCH_SIZE, -b BATCH_SIZE
-                        Number of examples in each mini-batch (default: 32)
-  --embedfile EMBED_FILE
-                        Pretrained word embedding file (default: None)
-  --embedsize EMBED_SIZE
-                        Size of embeddings (default: 100)
-  --epoch N_EPOCH, -e N_EPOCH
-                        Number of sweeps over the dataset to train (default:
-                        20)
-  --gpu GPU, -g GPU     GPU ID (negative value indicates CPU) (default: -1)
-  --lr LR               Learning Rate (default: 0.002)
-  --model MODEL_PARAMS  Model hyperparameter (default: {})
-  --out SAVE_TO         Save model to the specified directory (default: None)
-  --seed SEED           Random seed (default: None)
-  --trainfile TRAIN_FILE
-                        training data file (default: None)
-  --validfile TEST_FILE
-                        validation data file (default: None)
+  -h, --help        show this help message and exit
+  --batchsize NUM   Number of tokens in each mini-batch (default: 5000)
+  --cachedir DIR    Cache directory (default: /home/hiroki/work/repos/github.c
+                    om/chantera/biaffineparser/src/../cache)
+  --devfile FILE    Development data file (default: None)
+  --device ID       Device ID (negative value indicates CPU) (default: -1)
+  --dropout PROB    Dropout ratio (default: 0.33)
+  --embedfile FILE  Pretrained word embedding file (default: None)
+  --epoch NUM       Number of sweeps over the dataset to train (default: 20)
+  --lr VALUE        Learning rate (default: 0.002)
+  --refresh, -r     Refresh cache. (default: False)
+  --savedir DIR     Directory to save the model (default: None)
+  --seed VALUE      Random seed (default: None)
+  --trainfile FILE  Training data file. (default: None)
 ```
 
 ### Testing
 
 ```sh
-usage: parser.py test [-h] [--decode] [--gpu GPU] --modelfile MODEL_FILE
-                      --targetfile TARGET_FILE
+usage: main.py test [-h] [--device ID] --modelfile FILE --testfile FILE
 
 optional arguments:
-  -h, --help            show this help message and exit
-  --decode              Print decoded results (default: False)
-  --gpu GPU, -g GPU     GPU ID (negative value indicates CPU) (default: -1)
-  --modelfile MODEL_FILE
-                        Trained model archive file (default: None)
-  --targetfile TARGET_FILE
-                        Decoding target data file (default: None)
+  -h, --help        show this help message and exit
+  --device ID       Device ID (negative value indicates CPU) (default: -1)
+  --modelfile FILE  Trained model file (default: None)
+  --testfile FILE   Development data file (default: None)
 ```
 
-## Notes
+## Example
 
-The pytorch model weight initialization and GPU computation have not been completed yet.
+```sh
+mkdir models
+python3 src/main.py train --trainfile=$DATA/train.conll --devfile=$DATA/dev.conll --embedfile=$DATA/glove.6B.100d.txt --epoch=250 --device=0 --savedir=./models --seed=2017
+python3 src/main.py test --testfile=$DATA/test.conll --modelfile=./models/[yyyymmdd]-[id].npz --device=0
+```
 
 ### Performance
 
-The model implemented by chainer achieves **UAS: 94.91** and **LAS: 92.47** in wsj 22 (development set) in PTB-SD 3.3.0 with the reported hyperparameter settings.
+The model achieves **UAS: 95.50** and **LAS: 93.79** in wsj 23 (test set) in PTB-SD 3.3.0 with the reported hyperparameters.
 
 ## References
 
@@ -82,5 +71,5 @@ License
 ----
 Apache License Version 2.0
 
-&copy; Copyright 2017 Teranishi Hiroki
+&copy; Copyright 2019 Teranishi Hiroki
 
