@@ -95,17 +95,15 @@ class BiaffineParser(chainer.Chain):
             init_mlp = chainer.initializers.HeNormal(
                 scale=np.sqrt(0.5), fan_option='fan_out')
             self.mlp_arc_head = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activate, arc_mlp_dropout, initialW=init_mlp,
-                initial_bias=0.) for u in arc_mlp_units])
-            self.mlp_arc_dep = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activate, arc_mlp_dropout, initialW=init_mlp,
-                initial_bias=0.) for u in arc_mlp_units])
+                arc_mlp_units[i - 1] if i > 0 else h_dim, u, mlp_activate,
+                arc_mlp_dropout, initialW=init_mlp,
+                initial_bias=0.) for i, u in enumerate(arc_mlp_units)])
+            self.mlp_arc_dep = self.mlp_arc_head.copy(mode='init')
             self.mlp_rel_head = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activate, rel_mlp_dropout, initialW=init_mlp,
-                initial_bias=0.) for u in rel_mlp_units])
-            self.mlp_rel_dep = nn.MLP([nn.MLP.Layer(
-                h_dim, u, mlp_activate, rel_mlp_dropout, initialW=init_mlp,
-                initial_bias=0.) for u in rel_mlp_units])
+                rel_mlp_units[i - 1] if i > 0 else h_dim,  u, mlp_activate,
+                rel_mlp_dropout, initialW=init_mlp,
+                initial_bias=0.) for i, u in enumerate(rel_mlp_units)])
+            self.mlp_rel_dep = self.mlp_rel_head.copy(mode='init')
             init_biaf = chainer.initializers.Zero()
             self.biaf_arc = nn.Biaffine(
                 arc_mlp_units[-1], arc_mlp_units[-1], 1,
