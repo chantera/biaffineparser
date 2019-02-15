@@ -33,10 +33,9 @@ def train(train_file, test_file=None, embed_file=None,
             if test_file is not None else None
         return loader, train_dataset, test_dataset
 
-    loader, train_dataset, test_dataset = \
-        cache.load_or_create(key=(git.hash(), train_file, test_file),
-                             factory=_load, refresh=refresh_cache,
-                             dir=cache_dir, mkdir=True, logger=logger)
+    loader, train_dataset, test_dataset = cache.load_or_create(
+        key=(git.hash(), train_file, test_file, embed_file), factory=_load,
+        refresh=refresh_cache, dir=cache_dir, mkdir=True, logger=logger)
 
     model = _build_parser(loader, dropout_ratio=dropout_ratio)
     if device >= 0:
