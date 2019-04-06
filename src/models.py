@@ -303,8 +303,8 @@ def _embed_dropout(rs_words, rs_postags=None,
     if rs_postags is not None:
         postag_mask = xp.float32(1. - postag_dropout) \
             * (xp.random.rand(*mask_shape) >= postag_dropout)
-        word_embed_size = rs_words[0].shape[0]
-        postag_embed_size = rs_postags[0].shape[0]
+        word_embed_size = rs_words[0].shape[-1]
+        postag_embed_size = rs_postags[0].shape[-1]
         embed_size = word_embed_size + postag_embed_size
         dropped_sizes = word_mask * word_embed_size \
             + postag_mask * postag_embed_size
