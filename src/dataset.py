@@ -19,6 +19,7 @@ class DataLoader(TextLoader):
         super().__init__(reader=ConllReader())
         words = []
         if input_file is not None:
+            self._fix_word = True
             counter = Counter([word_preprocess(token['form'])
                                for sentence in self._reader.read(input_file)
                                for token in sentence])
@@ -26,6 +27,8 @@ class DataLoader(TextLoader):
                 if count < min_frequency:
                     break
                 words.append(word)
+        else:
+            self._fix_word = False
         word_vocab = text.EmbeddingVocab.from_words(
             words, unknown=word_unknown, dim=word_embed_size,
             initializer=(text.EmbeddingVocab.random_normal
@@ -50,9 +53,10 @@ class DataLoader(TextLoader):
         words, postags, heads, rels = zip(*[
             (token['form'], token['postag'], token['head'], token['deprel'])
             for token in item])
-        word_ids = self.map_attr('word', words, False)
+        word_ids = self.map_attr('word', words,
+                                 False if self._fix_word else self.train)
         pre_ids = self.map_attr('pre', words, False)
-        postag_ids = self.map_attr('pos', postags, True)
+        postag_ids = self.map_attr('pos', postags, self.train)
         heads = np.array(heads, dtype=np.int32)
         rel_ids = np.array(
             [self.rel_map.add(rel) for rel in rels], dtype=np.int32)

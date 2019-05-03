@@ -107,7 +107,8 @@ def _build_parser(loader, **kwargs):
         n_rels=len(loader.rel_map),
         encoder=models.Encoder(
             loader.get_embeddings('word'),
-            loader.get_embeddings('pre', normalize=lambda W: W / np.std(W)),
+            loader.get_embeddings('pre', normalize=lambda W: W / np.std(W)
+                                  if np.std(W) > 0. else W),
             loader.get_embeddings('pos'),
             n_lstm_layers=kwargs.get('n_lstm_layers', 3),
             lstm_hidden_size=kwargs.get('lstm_hidden_size', 400),
