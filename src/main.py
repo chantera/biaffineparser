@@ -17,12 +17,14 @@ logging.captureWarnings(True)
 
 
 def train(train_file, test_file=None, embed_file=None,
-          n_epoch=20, batch_size=5000, lr=2e-3, dropout_ratio=0.33, device=-1,
+          n_epoch=20, batch_size=5000, lr=2e-3, model_config=None, device=-1,
           save_dir=None, seed=None, cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
     logger = logging.getLogger()
     assert isinstance(logger, logging.AppLogger)
+    if model_config is None:
+        model_config = {}
 
     loader = dataset.DataLoader.build(
         input_file=train_file, word_embed_file=embed_file,
@@ -36,7 +38,7 @@ def train(train_file, test_file=None, embed_file=None,
                                    refresh_cache=refresh_cache)
     loader.update_cache()
 
-    model = _build_parser(loader, dropout_ratio=dropout_ratio)
+    model = _build_parser(loader, **model_config)
     if device >= 0:
         chainer.cuda.get_device_from_id(device).use()
         model.to_gpu(device)
@@ -102,6 +104,7 @@ def test(
 
 
 def _build_parser(loader, **kwargs):
+    dropout_ratio = kwargs.get('dropout', 0.33)
     parser = models.BiaffineParser(
         n_rels=len(loader.rel_map),
         encoder=models.Encoder(
@@ -111,13 +114,14 @@ def _build_parser(loader, **kwargs):
             loader.get_embeddings('pos'),
             n_lstm_layers=kwargs.get('n_lstm_layers', 3),
             lstm_hidden_size=kwargs.get('lstm_hidden_size', 400),
-            embeddings_dropout=kwargs.get('dropout_ratio', 0.33),
-            lstm_dropout=kwargs.get('dropout_ratio', 0.33)),
-        encoder_dropout=kwargs.get('dropout_ratio', 0.33),
+            embeddings_dropout=kwargs.get('input_dropout', dropout_ratio),
+            lstm_dropout=kwargs.get('lstm_dropout', dropout_ratio),
+            # recurrent_dropout=kwargs.get('recurrent_dropout', dropout_ratio)),
+            recurrent_dropout=0.0),
         arc_mlp_units=kwargs.get('arc_mlp_units', 500),
         rel_mlp_units=kwargs.get('rel_mlp_units', 100),
-        arc_mlp_dropout=kwargs.get('dropout_ratio', 0.33),
-        rel_mlp_dropout=kwargs.get('dropout_ratio', 0.33))
+        arc_mlp_dropout=kwargs.get('arc_mlp_dropout', dropout_ratio),
+        rel_mlp_dropout=kwargs.get('rel_mlp_dropout', dropout_ratio))
     return parser
 
 
@@ -131,9 +135,6 @@ if __name__ == "__main__":
         'cache_dir':
         arg('--cachedir', type=str, default=(App.basedir + '/../cache'),
             metavar='DIR', help='Cache directory'),
-        'dropout_ratio':
-        arg('--dropout', type=float, default=0.33, metavar='PROB',
-            help='Dropout ratio'),
         'test_file':
         arg('--devfile', type=str, default=None, metavar='FILE',
             help='Development data file'),
@@ -149,6 +150,9 @@ if __name__ == "__main__":
         'lr':
         arg('--lr', type=float, default=2e-3, metavar='VALUE',
             help='Learning rate'),
+        'model_config':
+        arg('--model', action='store_dict', metavar='KEY=VALUE',
+            help='Model configuration'),
         'refresh_cache':
         arg('--refresh', '-r', action='store_true', help='Refresh cache.'),
         'save_dir':

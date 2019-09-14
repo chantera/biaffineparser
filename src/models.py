@@ -80,7 +80,7 @@ NOTE: Weight Initialization comparison
 
 class BiaffineParser(chainer.Chain):
 
-    def __init__(self, n_rels, encoder, encoder_dropout=0.0,
+    def __init__(self, n_rels, encoder,
                  arc_mlp_units=500, rel_mlp_units=100,
                  arc_mlp_dropout=0.0, rel_mlp_dropout=0.0):
         super().__init__()
@@ -115,16 +115,12 @@ class BiaffineParser(chainer.Chain):
                 rel_mlp_units[-1], rel_mlp_units[-1], n_rels,
                 nobias=(False, False, False),
                 initialW=init_biaf, initial_bias=0.)
-        self.encoder_dropout = encoder_dropout
         self._results = {}
 
     def forward(self, words, pretrained_words, postags, *args):
         self._results.clear()
-        # [n; B], [n; B], [n; B] => [(n, d); B]
-        self._hs = self.encoder(words, pretrained_words, postags)
-        self._lengths = [hs_seq.shape[0] for hs_seq in self._hs]
-        # => (B, n_max, d)
-        hs = nn_F.dropout(F.pad_sequence(self._hs), self.encoder_dropout)
+        # [n; B], [n; B], [n; B] => (B, n_max, d)
+        hs = self.encode(words, pretrained_words, postags)
         hs_arc_h = self.mlp_arc_head(hs, n_batch_axes=2)
         hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
@@ -133,6 +129,10 @@ class BiaffineParser(chainer.Chain):
         self._logits_arc = F.squeeze(self.biaf_arc(hs_arc_d, hs_arc_h), axis=3)
         self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
         return self._logits_arc, self._logits_rel
+
+    def encode(self, *args):
+        self._hs, self._lengths = self.encoder(*args[:3])
+        return self._hs
 
     def parse(self, words, pretrained_words, postags, use_cache=True):
         with chainer.no_backprop_mode():
@@ -227,7 +227,8 @@ class Encoder(chainer.Chain):
                  n_lstm_layers=3,
                  lstm_hidden_size=None,
                  embeddings_dropout=0.0,
-                 lstm_dropout=0.0):
+                 lstm_dropout=0.0,
+                 recurrent_dropout=0.0):
         super().__init__()
         with self.init_scope():
             self._use_pretrained_word = self._use_postag = False
@@ -245,7 +246,8 @@ class Encoder(chainer.Chain):
                 s = weights.shape
                 embed_list.append(
                     nn_L.EmbedID(s[0], s[1], weights, None, fixed))
-            self.embeds = nn_L.EmbedList(embed_list, dropout=0.0, merge=False)
+            self.embeds = nn_L.EmbedList(
+                embed_list, dropout=0.0, merge=False, split=False)
             if lstm_hidden_size is None:
                 lstm_hidden_size = lstm_in_size
             # NOTE(chantera): The original implementation uses BiLSTM
@@ -254,36 +256,45 @@ class Encoder(chainer.Chain):
             # ---
             # self.bilstm = nn.NStepBiLSTM(
             #     n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout,
-            #     recurrent_dropout=lstm_dropout, use_variational_dropout=True)
+            #     recurrent_dropout, use_variational_dropout=True)
             self.bilstm = nn_L.NStepBiLSTM(
-                n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout)
+                n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout,
+                recurrent_dropout, use_variational_dropout=False)
         self.embeddings_dropout = embeddings_dropout
         self.lstm_dropout = lstm_dropout
         self._hidden_size = lstm_hidden_size
 
     def forward(self, *xs):
         # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
+        lengths = np.array([x.size for x in xs[0]], np.int32)
+        rs, boundaries = self.embeds(*xs)
+        rs = self._concat_embeds(rs, self.embeddings_dropout)
         # => [(n, d_word + d_pos); B]
-        rs = self._concat_embeds(self.embeds(*xs))
-        rs = [nn_F.dropout(rs_seq, self.lstm_dropout) for rs_seq in rs]
-        return self.bilstm(hx=None, cx=None, xs=rs)[-1]
+        if np.all(lengths == lengths[0]):
+            boundaries = len(lengths)
+        rs = F.split_axis(
+            nn_F.dropout(rs, self.lstm_dropout), boundaries, axis=0)
+        hs = self.bilstm(hx=None, cx=None, xs=rs)[-1]
+        hs = nn_F.dropout(F.pad_sequence(hs), self.lstm_dropout)
+        return hs, lengths
 
-    def _concat_embeds(self, embed_outputs):
+    def _concat_embeds(self, embed_outputs, dropout=0.0):
         rs_postags = embed_outputs.pop() if self._use_postag else None
         rs_words_pretrained = embed_outputs.pop() \
             if self._use_pretrained_word else None
         rs_words = embed_outputs.pop()
         if rs_words_pretrained is not None:
-            rs_words = [rs_word_seq + rs_pre_seq for rs_word_seq, rs_pre_seq
-                        in zip(rs_words, rs_words_pretrained)]
-        rs_words, rs_postags = \
-            _embed_dropout(rs_words, rs_postags,
-                           self.embeddings_dropout, self.embeddings_dropout)
-        if rs_postags:
-            rs = [F.concat((rs_word_seq, rs_postag_seq))
-                  for rs_word_seq, rs_postag_seq in zip(rs_words, rs_postags)]
+            rs_words += rs_words_pretrained
+        rs = [rs_words]
+        if rs_postags is not None:
+            rs.append(rs_postags)
+        rs = _embed_dropout_v1(
+            rs[0], rs[1] if len(rs) > 1 else None, dropout)
+        # rs = _embed_dropout_v2(rs, dropout)
+        if len(rs) > 1:
+            rs = F.concat(rs)
         else:
-            rs = rs_words
+            rs = rs[0]
         return rs
 
     @property
@@ -291,23 +302,23 @@ class Encoder(chainer.Chain):
         return self._hidden_size * 2
 
 
-def _embed_dropout(rs_words, rs_postags=None,
-                   word_dropout=0.0, postag_dropout=0.0):
+def _embed_dropout_v1(rs_words, rs_postags=None,
+                      word_dropout=0.0, postag_dropout=0.0):
     """
     Drop words and tags with scaling to compensate the dropped one.
     https://github.com/tdozat/Parser-v1/blob/0739216129cd39d69997d28cbc4133b360ea3934/lib/models/nn.py#L58  # NOQA
     """
     if not chainer.config.train:
         return rs_words, rs_postags
-    xp = chainer.cuda.get_array_module(rs_words[0])
-    mask_shape = (len(rs_words), max(seq.shape[0] for seq in rs_words), 1)
+    xp = chainer.cuda.get_array_module(rs_words)
+    mask_shape = (rs_words.shape[0], 1)
     word_mask = xp.float32(1. - word_dropout) \
         * (xp.random.rand(*mask_shape) >= word_dropout)
     if rs_postags is not None:
         postag_mask = xp.float32(1. - postag_dropout) \
             * (xp.random.rand(*mask_shape) >= postag_dropout)
-        word_embed_size = rs_words[0].shape[-1]
-        postag_embed_size = rs_postags[0].shape[-1]
+        word_embed_size = rs_words.shape[-1]
+        postag_embed_size = rs_postags.shape[-1]
         embed_size = word_embed_size + postag_embed_size
         dropped_sizes = word_mask * word_embed_size \
             + postag_mask * postag_embed_size
@@ -317,11 +328,25 @@ def _embed_dropout(rs_words, rs_postags=None,
         scale = embed_size / (dropped_sizes + 1e-12)
         word_mask *= scale
         postag_mask *= scale
-    ys_words = [rs_word_seq * word_mask[i, :rs_word_seq.shape[0]]
-                for i, rs_word_seq in enumerate(rs_words)]
+    ys_words = rs_words * word_mask
     if rs_postags is not None:
-        ys_postags = [rs_postag_seq * postag_mask[i, :rs_postag_seq.shape[0]]
-                      for i, rs_postag_seq in enumerate(rs_postags)]
+        ys_postags = rs_postags * postag_mask
     else:
         ys_postags = None
     return ys_words, ys_postags
+
+
+def _embed_dropout_v2(xs, dropout=0.0):
+    """
+    Drop representations with scaling.
+    https://github.com/tdozat/Parser-v2/blob/304c638aa780a5591648ef27060cfa7e4bee2bd0/parser/neural/models/nn.py#L50  # NOQA
+    """
+    if not chainer.config.train or dropout == 0.0:
+        return xs
+    xp = chainer.cuda.get_array_module(xs[0])
+    masks = (xp.random.rand(len(xs), xs[0].shape[0]) >= dropout) \
+        .astype(xp.float32)
+    scale = len(masks) / xp.maximum(xp.sum(masks, axis=0, keepdims=True), 1)
+    masks = xp.expand_dims(masks * scale, axis=2)
+    ys = [xs_each * mask for xs_each, mask in zip(xs, masks)]
+    return ys
