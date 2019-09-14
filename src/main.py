@@ -1,7 +1,6 @@
 import chainer
 import numpy as np
 from teras.app import App, arg
-from teras.io import cache
 import teras.training as training
 import teras.utils.logging as Log
 from teras.utils import git
@@ -25,17 +24,17 @@ def train(train_file, test_file=None, embed_file=None,
     logger = Log.getLogger()
     assert isinstance(logger, Log.AppLogger)
 
-    def _load():
-        loader = dataset.DataLoader(input_file=train_file,
-                                    word_embed_file=embed_file)
-        train_dataset = loader.load(train_file, train=True, bucketing=True)
-        test_dataset = loader.load(test_file, train=False, bucketing=True) \
-            if test_file is not None else None
-        return loader, train_dataset, test_dataset
-
-    loader, train_dataset, test_dataset = cache.load_or_create(
-        key=(git.hash(), train_file, test_file, embed_file), factory=_load,
-        refresh=refresh_cache, dir=cache_dir, mkdir=True, logger=logger)
+    loader = dataset.DataLoader.build(
+        input_file=train_file, word_embed_file=embed_file,
+        refresh_cache=refresh_cache, extra_ids=(git.hash(),),
+        cache_options=dict(dir=cache_dir, mkdir=True, logger=logger))
+    train_dataset = loader.load(train_file, train=True, bucketing=True,
+                                refresh_cache=refresh_cache)
+    test_dataset = None
+    if test_file is not None:
+        test_dataset = loader.load(test_file, train=False, bucketing=True,
+                                   refresh_cache=refresh_cache)
+    loader.update_cache()
 
     model = _build_parser(loader, dropout_ratio=dropout_ratio)
     if device >= 0:

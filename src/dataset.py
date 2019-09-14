@@ -1,12 +1,12 @@
 from collections import Counter
 
 import numpy as np
-from teras.dataset.loader import TextLoader
+from teras.dataset.loader import CachedTextLoader
 from teras.io.reader import ConllReader
 from teras.preprocessing import text
 
 
-class DataLoader(TextLoader):
+class DataLoader(CachedTextLoader):
 
     def __init__(self,
                  word_embed_size=100,
