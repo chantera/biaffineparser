@@ -2,8 +2,7 @@ import chainer
 import numpy as np
 from teras.app import App, arg
 import teras.training as training
-import teras.utils.logging as Log
-from teras.utils import git
+from teras.utils import git, logging
 from tqdm import tqdm
 
 from common import optimizers, utils
@@ -14,6 +13,7 @@ import models
 
 chainer.Variable.__int__ = lambda self: int(self.data)
 chainer.Variable.__float__ = lambda self: float(self.data)
+logging.captureWarnings(True)
 
 
 def train(train_file, test_file=None, embed_file=None,
@@ -21,8 +21,8 @@ def train(train_file, test_file=None, embed_file=None,
           save_dir=None, seed=None, cache_dir='', refresh_cache=False):
     if seed is not None:
         utils.set_random_seed(seed, device)
-    logger = Log.getLogger()
-    assert isinstance(logger, Log.AppLogger)
+    logger = logging.getLogger()
+    assert isinstance(logger, logging.AppLogger)
 
     loader = dataset.DataLoader.build(
         input_file=train_file, word_embed_file=embed_file,
@@ -90,7 +90,7 @@ def test(
     pbar = training.listeners.ProgressBar(lambda n: tqdm(total=n))
     pbar.init(len(test_dataset))
     evaluator = Evaluator(
-        model, context.loader.rel_map, test_file, Log.getLogger())
+        model, context.loader.rel_map, test_file, logging.getLogger())
     utils.chainer_train_off()
     for batch in test_dataset.batch(
             context.batch_size, colwise=True, shuffle=False):
@@ -123,7 +123,7 @@ def _build_parser(loader, **kwargs):
 
 if __name__ == "__main__":
     App.configure(logdir=App.basedir + '/../logs', loglevel='debug')
-    Log.AppLogger.configure(mkdir=True)
+    logging.AppLogger.configure(mkdir=True)
     App.add_command('train', train, {
         'batch_size':
         arg('--batchsize', type=int, default=5000, metavar='NUM',
