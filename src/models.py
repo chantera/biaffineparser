@@ -1,8 +1,10 @@
 import chainer
 import chainer.functions as F
+import chainer_nn.functions as nn_F
+import chainer_nn.links as nn_L
 import numpy as np
 
-from common import mst, nn
+from common import mst
 
 
 """
@@ -94,22 +96,22 @@ class BiaffineParser(chainer.Chain):
             h_dim = self.encoder.out_size
             init_mlp = chainer.initializers.HeNormal(
                 scale=np.sqrt(0.5), fan_option='fan_out')
-            self.mlp_arc_head = nn.MLP([nn.MLP.Layer(
+            self.mlp_arc_head = nn_L.MLP([nn_L.MLP.Layer(
                 arc_mlp_units[i - 1] if i > 0 else h_dim, u, mlp_activate,
                 arc_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for i, u in enumerate(arc_mlp_units)])
             self.mlp_arc_dep = self.mlp_arc_head.copy(mode='init')
-            self.mlp_rel_head = nn.MLP([nn.MLP.Layer(
+            self.mlp_rel_head = nn_L.MLP([nn_L.MLP.Layer(
                 rel_mlp_units[i - 1] if i > 0 else h_dim,  u, mlp_activate,
                 rel_mlp_dropout, initialW=init_mlp,
                 initial_bias=0.) for i, u in enumerate(rel_mlp_units)])
             self.mlp_rel_dep = self.mlp_rel_head.copy(mode='init')
             init_biaf = chainer.initializers.Zero()
-            self.biaf_arc = nn.Biaffine(
+            self.biaf_arc = nn_L.Biaffine(
                 arc_mlp_units[-1], arc_mlp_units[-1], 1,
                 nobias=(False, True, True),
                 initialW=init_biaf, initial_bias=0.)
-            self.biaf_rel = nn.Biaffine(
+            self.biaf_rel = nn_L.Biaffine(
                 rel_mlp_units[-1], rel_mlp_units[-1], n_rels,
                 nobias=(False, False, False),
                 initialW=init_biaf, initial_bias=0.)
@@ -122,7 +124,7 @@ class BiaffineParser(chainer.Chain):
         self._hs = self.encoder(words, pretrained_words, postags)
         self._lengths = [hs_seq.shape[0] for hs_seq in self._hs]
         # => (B, n_max, d)
-        hs = nn.dropout(F.pad_sequence(self._hs), self.encoder_dropout)
+        hs = nn_F.dropout(F.pad_sequence(self._hs), self.encoder_dropout)
         hs_arc_h = self.mlp_arc_head(hs, n_batch_axes=2)
         hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
@@ -241,8 +243,9 @@ class Encoder(chainer.Chain):
             embed_list = []
             for weights, fixed in embeddings:
                 s = weights.shape
-                embed_list.append(nn.EmbedID(s[0], s[1], weights, None, fixed))
-            self.embeds = nn.EmbedList(embed_list, dropout=0.0, merge=False)
+                embed_list.append(
+                    nn_L.EmbedID(s[0], s[1], weights, None, fixed))
+            self.embeds = nn_L.EmbedList(embed_list, dropout=0.0, merge=False)
             if lstm_hidden_size is None:
                 lstm_hidden_size = lstm_in_size
             # NOTE(chantera): The original implementation uses BiLSTM
@@ -252,7 +255,7 @@ class Encoder(chainer.Chain):
             # self.bilstm = nn.NStepBiLSTM(
             #     n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout,
             #     recurrent_dropout=lstm_dropout, use_variational_dropout=True)
-            self.bilstm = chainer.links.NStepBiLSTM(
+            self.bilstm = nn_L.NStepBiLSTM(
                 n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout)
         self.embeddings_dropout = embeddings_dropout
         self.lstm_dropout = lstm_dropout
@@ -262,7 +265,7 @@ class Encoder(chainer.Chain):
         # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
         # => [(n, d_word + d_pos); B]
         rs = self._concat_embeds(self.embeds(*xs))
-        rs = [nn.dropout(rs_seq, self.lstm_dropout) for rs_seq in rs]
+        rs = [nn_F.dropout(rs_seq, self.lstm_dropout) for rs_seq in rs]
         return self.bilstm(hx=None, cx=None, xs=rs)[-1]
 
     def _concat_embeds(self, embed_outputs):
