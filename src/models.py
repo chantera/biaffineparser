@@ -288,9 +288,12 @@ class Encoder(chainer.Chain):
         rs = [rs_words]
         if rs_postags is not None:
             rs.append(rs_postags)
-        rs = _embed_dropout_v1(
-            rs[0], rs[1] if len(rs) > 1 else None, dropout)
-        # rs = _embed_dropout_v2(rs, dropout)
+        # NOTE(chantera): The original implementation uses
+        # embeddings dropout as below.
+        # ---
+        # rs = _embed_dropout_v1(
+        #     rs[0], rs[1] if len(rs) > 1 else None, dropout)
+        rs = _embed_dropout_v2(rs, dropout)
         if len(rs) > 1:
             rs = F.concat(rs)
         else:
