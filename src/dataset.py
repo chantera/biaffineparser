@@ -50,6 +50,7 @@ class DataLoader(CachedTextLoader):
         self.rel_map = text.Dict()
 
     def map(self, item):
+        n_rels = len(self.rel_map)
         words, postags, heads, rels = zip(*[
             (token['form'], token['postag'], token['head'], token['deprel'])
             for token in item])
@@ -62,13 +63,15 @@ class DataLoader(CachedTextLoader):
             [self.rel_map.add(rel) for rel in rels], dtype=np.int32)
         sentence = None if self.train else item
         sample = (word_ids, pre_ids, postag_ids, sentence, (heads, rel_ids))
+        self._updated = self.train or n_rels < len(self.rel_map)
         return sample
 
     def load(self, file, train=False, size=None, bucketing=False,
              extra_ids=None, refresh_cache=False):
-        n_rels = len(self.rel_map)
+        self._updated = False
         dataset = super().load(
             file, train, size, bucketing, extra_ids, refresh_cache)
-        if train or n_rels < len(self.rel_map):
+        if self._updated:
             self.update_cache()
+        self._updated = False
         return dataset
