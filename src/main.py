@@ -36,7 +36,6 @@ def train(train_file, test_file=None, embed_file=None,
     if test_file is not None:
         test_dataset = loader.load(test_file, train=False, bucketing=True,
                                    refresh_cache=refresh_cache)
-    loader.update_cache()
 
     model = _build_parser(loader, **model_config)
     if device >= 0:

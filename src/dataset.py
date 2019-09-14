@@ -63,3 +63,12 @@ class DataLoader(CachedTextLoader):
         sentence = None if self.train else item
         sample = (word_ids, pre_ids, postag_ids, sentence, (heads, rel_ids))
         return sample
+
+    def load(self, file, train=False, size=None, bucketing=False,
+             extra_ids=None, refresh_cache=False):
+        n_rels = len(self.rel_map)
+        dataset = super().load(
+            file, train, size, bucketing, extra_ids, refresh_cache)
+        if train or n_rels < len(self.rel_map):
+            self.update_cache()
+        return dataset
