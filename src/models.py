@@ -127,7 +127,7 @@ class BiaffineParser(chainer.Chain):
         hs_rel_d = self.mlp_rel_dep(hs, n_batch_axes=2)
         logits_arc = F.squeeze(self.biaf_arc(hs_arc_d, hs_arc_h), axis=3)
         mask = self.xp.asarray(_mask_arc(logits_arc, self._lengths))
-        self._logits_arc = logits_arc + mask * -1e8
+        self._logits_arc = logits_arc + (1. - mask) * -1e8
         self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
         # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
         return self._logits_arc, self._logits_rel
