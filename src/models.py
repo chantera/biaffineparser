@@ -143,8 +143,8 @@ class BiaffineParser(chainer.Chain):
                 self.forward(words, pretrained_words, postags)
             arcs = _parse_by_graph(self._logits_arc, self._lengths, self._mask)
             rels = _decode_rels(self._logits_rel, arcs, self._lengths)
-            arcs = [arcs_seq[:n] for arcs_seq, n in zip(arcs, self._lengths)]
-            rels = [rels_seq[:n] for rels_seq, n in zip(rels, self._lengths)]
+            arcs = [arcs_i[:n] for arcs_i, n in zip(arcs, self._lengths)]
+            rels = [rels_i[:n] for rels_i, n in zip(rels, self._lengths)]
             parsed = list(zip(arcs, rels))
             return parsed
 
@@ -181,8 +181,8 @@ def _parse_by_graph(logits_arc, lengths, mask=None):
         probs *= mask
     probs = chainer.cuda.to_cpu(probs)
     trees = np.full((len(lengths), max(lengths)), -1, dtype=np.int32)
-    for i, (probs_seq, length) in enumerate(zip(probs, lengths)):
-        trees[i, 1:length] = mst.mst(probs_seq[:length, :length])[0][1:]
+    for i, (probs_i, length) in enumerate(zip(probs, lengths)):
+        trees[i, 1:length] = mst.mst(probs_i[:length, :length])[0][1:]
     return trees
 
 
@@ -193,8 +193,8 @@ def _decode_rels(logits_rel, trees, lengths, root=0):
     logits_rel[:, :, root] = -1e8
     rels = logits_rel.argmax(axis=2)
     rels = chainer.cuda.to_cpu(rels)
-    for rels_seq, arcs_seq in zip(rels, trees):
-        rels_seq[:] = np.where(arcs_seq == 0, root, rels_seq)
+    for rels_i, arcs_i in zip(rels, trees):
+        rels_i[:] = np.where(arcs_i == 0, root, rels_i)
     rels[:, 0] = -1
     return rels
 
