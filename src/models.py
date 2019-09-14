@@ -125,9 +125,11 @@ class BiaffineParser(chainer.Chain):
         hs_arc_d = self.mlp_arc_dep(hs, n_batch_axes=2)
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
         hs_rel_d = self.mlp_rel_dep(hs, n_batch_axes=2)
-        # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
-        self._logits_arc = F.squeeze(self.biaf_arc(hs_arc_d, hs_arc_h), axis=3)
+        logits_arc = F.squeeze(self.biaf_arc(hs_arc_d, hs_arc_h), axis=3)
+        mask = self.xp.asarray(_mask_arc(logits_arc, self._lengths))
+        self._logits_arc = logits_arc + mask * -1e8
         self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
+        # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
         return self._logits_arc, self._logits_rel
 
     def encode(self, *args):
@@ -155,7 +157,16 @@ class BiaffineParser(chainer.Chain):
                 'arc_accuracy': arc_accuracy,
                 'rel_accuracy': rel_accuracy,
             })
-        return arc_accuracy.data, rel_accuracy.data
+        return arc_accuracy, rel_accuracy
+
+
+def _mask_arc(logits_arc, lengths):
+    mask = np.zeros(logits_arc.shape, dtype=np.float32)
+    for i, length in enumerate(lengths):
+        mask[i, :length, :length] = 1.
+    mask *= (1. - np.eye(logits_arc.shape[2], dtype=np.float32))
+    mask[:, 0] = 0.
+    return mask
 
 
 def _parse(logits_arc, logits_rel, lengths):
@@ -175,8 +186,8 @@ def _parse(logits_arc, logits_rel, lengths):
 
 def _compute_metrics(parsed, gold_batch, lengths,
                      use_predicted_arcs_for_rels=True):
-    logits_arc, logits_rel = parsed
-    true_arcs, true_rels = zip(*gold_batch)
+    logits_arc, logits_rel, *_ = parsed
+    true_arcs, true_rels, *_ = zip(*gold_batch)
 
     # exclude attachment from the root
     logits_arc, logits_rel = logits_arc[:, 1:], logits_rel[:, 1:]
@@ -193,29 +204,48 @@ def _compute_metrics(parsed, gold_batch, lengths,
     true_arcs_flatten = F.reshape(true_arcs, (b * n_deps,))
     arc_loss = F.softmax_cross_entropy(
         logits_arc_flatten, true_arcs_flatten, ignore_label=-1)
-    arc_accuracy = F.accuracy(
+    arc_accuracy = _accuracy(
         logits_arc_flatten, true_arcs_flatten, ignore_label=-1)
-    arc_accuracy.to_cpu()
 
     if use_predicted_arcs_for_rels:
         parsed_arcs = xp.argmax(logits_arc.data, axis=2)
     else:
         parsed_arcs = true_arcs.data
-    logits_rel = [logits[np.arange(length), arcs[:length]]
-                  for logits, arcs, length
-                  in zip(logits_rel, parsed_arcs, lengths)]
-    logits_rel = F.pad_sequence(logits_rel)
-    b, n_deps, n_rels = logits_rel.shape
-    logits_rel_flatten = F.reshape(logits_rel, (b * n_deps, n_rels))
+    parsed_arcs = chainer.cuda.to_cpu(parsed_arcs)
+    b, n_deps, n_heads, n_rels = logits_rel.shape
+    base1, base2 = n_deps * n_heads, np.arange(n_deps) * n_heads
+    parsed_arcs_flatten = np.concatenate(
+        [base1 * i + base2 + arcs for i, arcs in enumerate(parsed_arcs)])
+    logits_rel_flatten = F.embed_id(
+        xp.asarray(parsed_arcs_flatten),
+        F.reshape(logits_rel, (b * base1, n_rels)))
     true_rels_flatten = F.reshape(true_rels, (b * n_deps,))
     rel_loss = F.softmax_cross_entropy(
         logits_rel_flatten, true_rels_flatten, ignore_label=-1)
-    rel_accuracy = F.accuracy(
+    rel_accuracy = _accuracy(
         logits_rel_flatten, true_rels_flatten, ignore_label=-1)
-    rel_accuracy.to_cpu()
 
     return {'arc_loss': arc_loss, 'arc_accuracy': arc_accuracy,
             'rel_loss': rel_loss, 'rel_accuracy': rel_accuracy}
+
+
+def _accuracy(y, t, ignore_label=None):
+    if isinstance(y, chainer.Variable):
+        y = y.data
+    if isinstance(t, chainer.Variable):
+        t = t.data
+    xp = chainer.cuda.get_array_module(y)
+    pred = y.argmax(axis=1).reshape(t.shape)
+    if ignore_label is not None:
+        mask = (t == ignore_label)
+        ignore_cnt = mask.sum()
+        pred = xp.where(mask, ignore_label, pred)
+        count = (pred == t).sum() - ignore_cnt
+        total = t.size - ignore_cnt
+    else:
+        count = (pred == t).sum()
+        total = t.size
+    return count, total
 
 
 class Encoder(chainer.Chain):
