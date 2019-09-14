@@ -2,11 +2,22 @@ from collections import defaultdict
 
 import numpy as np
 
+from .chuliu_edmonds import chuliu_edmonds_one_root
 
-def mst(arc_probs, rel_probs):
-    arcs = _arc_argmax(arc_probs)
-    rels = _rel_argmax(rel_probs[np.arange(len(arcs)), arcs])
-    return arcs[1:], rels[1:]
+
+def mst(arc_probs, rel_probs=None, use_chi_liu_edmonds=True):
+    if use_chi_liu_edmonds:
+        arcs = chuliu_edmonds_one_root(arc_probs)
+    else:
+        arcs = _arc_argmax(arc_probs)
+    arcs[0] = 0
+    if rel_probs is not None:
+        rels = _rel_argmax(rel_probs[np.arange(len(arcs)), arcs])
+        rels[0] = -1
+    else:
+        rels = None
+    arcs[0] = -1
+    return arcs, rels
 
 
 def _arc_argmax(probs):

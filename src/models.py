@@ -126,8 +126,9 @@ class BiaffineParser(chainer.Chain):
         hs_rel_h = self.mlp_rel_head(hs, n_batch_axes=2)
         hs_rel_d = self.mlp_rel_dep(hs, n_batch_axes=2)
         logits_arc = F.squeeze(self.biaf_arc(hs_arc_d, hs_arc_h), axis=3)
-        mask = self.xp.asarray(_mask_arc(logits_arc, self._lengths))
-        self._logits_arc = logits_arc + (1. - mask) * -1e8
+        self._mask = self.xp.asarray(_mask_arc(
+            logits_arc, self._lengths, mask_loop=not chainer.config.train))
+        self._logits_arc = logits_arc + (1. - self._mask) * -1e8
         self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
         # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
         return self._logits_arc, self._logits_rel
@@ -140,7 +141,12 @@ class BiaffineParser(chainer.Chain):
         with chainer.no_backprop_mode():
             if len(self._results) == 0 or not use_cache:
                 self.forward(words, pretrained_words, postags)
-            return _parse(self._logits_arc, self._logits_rel, self._lengths)
+            arcs = _parse_by_graph(self._logits_arc, self._lengths, self._mask)
+            rels = _decode_rels(self._logits_rel, arcs, self._lengths)
+            arcs = [arcs_seq[:n] for arcs_seq, n in zip(arcs, self._lengths)]
+            rels = [rels_seq[:n] for rels_seq, n in zip(rels, self._lengths)]
+            parsed = list(zip(arcs, rels))
+            return parsed
 
     def compute_loss(self, y, t):
         self._results = _compute_metrics(y, t, self._lengths, False)
@@ -160,28 +166,37 @@ class BiaffineParser(chainer.Chain):
         return arc_accuracy, rel_accuracy
 
 
-def _mask_arc(logits_arc, lengths):
+def _mask_arc(logits_arc, lengths, mask_loop=True):
     mask = np.zeros(logits_arc.shape, dtype=np.float32)
     for i, length in enumerate(lengths):
         mask[i, :length, :length] = 1.
-    mask *= (1. - np.eye(logits_arc.shape[2], dtype=np.float32))
-    mask[:, 0] = 0.
+    if mask_loop:
+        mask *= (1. - np.eye(logits_arc.shape[2], dtype=np.float32))
     return mask
 
 
-def _parse(logits_arc, logits_rel, lengths):
-    xp = chainer.cuda.get_array_module(logits_arc)
-    mask = xp.full(logits_arc.shape, -float('inf'))
-    for i, length in enumerate(lengths):
-        mask[i, :, :length] = 0.0
-    arc_probs = F.softmax(logits_arc.data + mask, axis=2).data
-    arc_probs = chainer.cuda.to_cpu(arc_probs)
-    rel_probs = F.softmax(logits_rel, axis=3).data
-    rel_probs = chainer.cuda.to_cpu(rel_probs)
-    parsed = [mst.mst(arc_prob[:length, :length], rel_prob[:length, :length])
-              for arc_prob, rel_prob, length
-              in zip(arc_probs, rel_probs, lengths)]
-    return parsed
+def _parse_by_graph(logits_arc, lengths, mask=None):
+    probs = F.softmax(logits_arc, axis=2).data
+    if mask is not None:
+        probs *= mask
+    probs = chainer.cuda.to_cpu(probs)
+    trees = np.full((len(lengths), max(lengths)), -1, dtype=np.int32)
+    for i, (probs_seq, length) in enumerate(zip(probs, lengths)):
+        trees[i, 1:length] = mst.mst(probs_seq[:length, :length])[0][1:]
+    return trees
+
+
+def _decode_rels(logits_rel, trees, lengths, root=0):
+    steps = np.arange(trees.shape[1])
+    logits_rel = [logits_rel[i, steps, arcs] for i, arcs in enumerate(trees)]
+    logits_rel = F.stack(logits_rel, axis=0).data
+    logits_rel[:, :, root] = -1e8
+    rels = logits_rel.argmax(axis=2)
+    rels = chainer.cuda.to_cpu(rels)
+    for rels_seq, arcs_seq in zip(rels, trees):
+        rels_seq[:] = np.where(arcs_seq == 0, root, rels_seq)
+    rels[:, 0] = -1
+    return rels
 
 
 def _compute_metrics(parsed, gold_batch, lengths,
