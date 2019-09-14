@@ -69,7 +69,7 @@ def train(train_file, test_file=None, embed_file=None,
                 utils.Saver(model, basename="{}-{}".format(date, accessid),
                             context=dict(App.context, loader=loader),
                             directory=save_dir, logger=logger, save_best=True,
-                            evaluate=lambda _: evaluator.result['UAS']))
+                            evaluate=(lambda _: evaluator._parsed['UAS'])))
     trainer.fit(train_dataset, test_dataset, n_epoch, batch_size)
 
 
@@ -82,7 +82,10 @@ def test(
         utils.set_random_seed(context.seed, device)
 
     test_dataset = context.loader.load(test_file, train=False, bucketing=True)
-    model = _build_parser(**dict(context))
+    kwargs = dict(context)
+    if context.model_config is not None:
+        kwargs.update(context.model_config)
+    model = _build_parser(**dict(kwargs))
     chainer.serializers.load_npz(model_file, model)
     if device >= 0:
         chainer.cuda.get_device_from_id(device).use()
@@ -96,10 +99,10 @@ def test(
     for batch in test_dataset.batch(
             context.batch_size, colwise=True, shuffle=False):
         xs, ts = batch[:-1], batch[-1]
-        parsed = model.parse(*xs)
-        evaluator.append([tokens[1:] for tokens in xs[-1]], parsed)
+        ys = model.forward(*xs)
+        evaluator.on_batch_end({'train': False, 'xs': xs, 'ys': ys, 'ts': ts})
         pbar.update(len(ts))
-    evaluator.report(show_details=False)
+    evaluator.on_epoch_validate_end({})
 
 
 def _build_parser(loader, **kwargs):
