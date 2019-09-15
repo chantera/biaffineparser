@@ -146,7 +146,7 @@ if __name__ == "__main__":
         arg('--embedfile', type=str, default=None, metavar='FILE',
             help='Pretrained word embedding file'),
         'n_epoch':
-        arg('--epoch', type=int, default=20, metavar='NUM',
+        arg('--epoch', type=int, default=300, metavar='NUM',
             help='Number of sweeps over the dataset to train'),
         'lr':
         arg('--lr', type=float, default=2e-3, metavar='VALUE',
