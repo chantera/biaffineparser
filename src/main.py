@@ -175,6 +175,6 @@ if __name__ == "__main__":
             help='Trained model file'),
         'test_file':
         arg('--testfile', type=str, required=True, metavar='FILE',
-            help='Development data file'),
+            help='Test data file'),
     })
     App.run()

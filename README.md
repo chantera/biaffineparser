@@ -48,7 +48,7 @@ optional arguments:
   -h, --help        show this help message and exit
   --device ID       Device ID (negative value indicates CPU) (default: -1)
   --modelfile FILE  Trained model file (default: None)
-  --testfile FILE   Development data file (default: None)
+  --testfile FILE   Test data file (default: None)
 ```
 
 ## Example
