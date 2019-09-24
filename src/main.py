@@ -73,10 +73,7 @@ def train(train_file, test_file=None, embed_file=None,
     trainer.fit(train_dataset, test_dataset, n_epoch, batch_size)
 
 
-def test(
-        model_file,
-        test_file,
-        device=-1):
+def test(model_file, test_file, device=-1):
     context = utils.Saver.load_context(model_file)
     if context.seed is not None:
         utils.set_random_seed(context.seed, device)
