@@ -1,10 +1,10 @@
 # biaffineparser: Deep Biaffine Attention Dependency Parser
 
-biaffineparser is a chainer implementation of "[Deep Biaffine Attention for Neural Dependency Parsing](https://arxiv.org/abs/1611.01734)."
+biaffineparser is a PyTorch implementation of "[Deep Biaffine Attention for Neural Dependency Parsing](https://arxiv.org/abs/1611.01734)."
 
 ## Installation
 
-biaffineparser works on Python3 and requires chainer, chainer\_nn, numpy, and teras.
+biaffineparser works on Python3 and requires torch, numpy, tqdm, and teras.
 
 ```sh
 $ git clone https://github.com/chantera/biaffineparser
