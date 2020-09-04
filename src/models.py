@@ -25,8 +25,6 @@ class BiaffineParser(nn.Module):
 
         self.encoder = encoder
         h_dim = self.encoder.out_size
-        # init_mlp = chainer.initializers.HeNormal(
-        #     scale=np.sqrt(0.5), fan_option='fan_out')
         self.mlp_arc_head = _create_mlp(h_dim, arc_mlp_units, arc_mlp_dropout)
         self.mlp_arc_dep = _create_mlp(h_dim, arc_mlp_units, arc_mlp_dropout)
         self.mlp_rel_head = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
@@ -140,8 +138,7 @@ def _compute_metrics(parsed, gold_batch, lengths,
         logits_arc_flatten, true_arcs_flatten, ignore_index=-1)
 
     if use_predicted_arcs_for_rels:
-        assert False
-        parsed_arcs = xp.argmax(logits_arc.data, axis=2)
+        parsed_arcs = logits_arc.argmax(dim=2)
     else:
         parsed_arcs = true_arcs.masked_fill(true_arcs == -1, 0)
     b, n_deps, n_heads, n_rels = logits_rel.shape
@@ -218,16 +215,7 @@ class Encoder(nn.Module):
             torch.from_numpy(w), fixed) for w, fixed in embeddings)
         if lstm_hidden_size is None:
             lstm_hidden_size = lstm_in_size
-        # NOTE(chantera): The original implementation uses BiLSTM
-        # with variational dropout for inputs and hidden states.
-        # The same dropout is applied by the following code:
-        # ---
-        # self.bilstm = nn.NStepBiLSTM(
-        #     n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout,
-        #     recurrent_dropout, use_variational_dropout=True)
-        # self.bilstm = nn_L.NStepBiLSTM(
-        #     n_lstm_layers, lstm_in_size, lstm_hidden_size, lstm_dropout,
-        #     recurrent_dropout, use_variational_dropout=False)
+        # TODO: Implement recurrent dropout
         self.bilstm = nn.LSTM(
             lstm_in_size, lstm_hidden_size, n_lstm_layers,
             batch_first=True, dropout=lstm_dropout, bidirectional=True)

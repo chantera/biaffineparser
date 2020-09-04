@@ -5,7 +5,7 @@ from teras.utils import git, logging
 import torch
 from tqdm import tqdm
 
-from common import optimizers, utils
+from common import utils
 import dataset
 from eval import Evaluator
 import models
@@ -41,14 +41,15 @@ def train(train_file, test_file=None, embed_file=None,
         model.cuda()
     optimizer = torch.optim.Adam(
         model.parameters(), lr, betas=(0.9, 0.9), eps=1e-12)
-    # optimizer.add_hook(optimizers.ExponentialDecayAnnealing(
-    #     initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lambda epoch: 0.75 ** (epoch / 5000))
 
     def _update(optimizer, loss):
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         optimizer.step()
+        scheduler.step()
 
     def _report(y, t):
         arc_accuracy, rel_accuracy = model.compute_accuracy(y, t)
