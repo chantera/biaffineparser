@@ -41,11 +41,11 @@ class BiaffineParser(nn.Module):
         hs_arc_d = self.mlp_arc_dep(hs)
         hs_rel_h = self.mlp_rel_head(hs)
         hs_rel_d = self.mlp_rel_dep(hs)
-        logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
-        mask = _mask_arc(
-            logits_arc, self._lengths, mask_loop=not(self.training))
-        self._mask = mask = _from_numpy(mask, np.bool, logits_arc.is_cuda)
-        self._logits_arc = logits_arc.masked_fill_(mask.logical_not(), -1e8)
+        self._logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
+        self._mask = _mask_arc(
+            self._logits_arc, self._lengths, mask_loop=not(self.training))
+        if self._mask is not None:
+            self._logits_arc.masked_fill_(self._mask.logical_not(), -1e8)
         self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
         # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
         return self._logits_arc, self._logits_rel
@@ -83,12 +83,18 @@ class BiaffineParser(nn.Module):
 
 
 def _mask_arc(logits_arc, lengths, mask_loop=True):
-    mask = np.zeros(logits_arc.shape, dtype=np.int32)
-    for i, length in enumerate(lengths):
-        mask[i, :length, :length] = 1
+    if np.all(lengths == lengths[0]):
+        if not mask_loop:
+            return None
+        mask = np.ones(logits_arc.shape, dtype=np.bool)
+    else:
+        mask = np.zeros(logits_arc.shape, dtype=np.bool)
+        for i, length in enumerate(lengths):
+            mask[i, :length, :length] = 1
     if mask_loop:
-        mask *= (1 - np.eye(logits_arc.shape[2], dtype=np.int32))
-    return mask
+        idx = np.arange(mask.shape[-1])
+        mask[:, idx, idx] = 0
+    return _from_numpy(mask, device=logits_arc.get_device())
 
 
 def _parse_by_graph(logits_arc, lengths, mask=None):
@@ -123,9 +129,9 @@ def _compute_metrics(parsed, gold_batch, lengths,
     # exclude attachment from the root
     logits_arc, logits_rel = logits_arc[:, 1:], logits_rel[:, 1:]
     true_arcs = _from_numpy(_np_pad_sequence(true_arcs, padding=-1)[:, 1:],
-                            dtype=np.int64, cuda=logits_arc.is_cuda)
+                            dtype=torch.int64, device=logits_arc.get_device())
     true_rels = _from_numpy(_np_pad_sequence(true_rels, padding=-1)[:, 1:],
-                            dtype=np.int64, cuda=logits_rel.is_cuda)
+                            dtype=torch.int64, device=logits_rel.get_device())
     lengths = lengths - 1
 
     b, n_deps, n_heads = logits_arc.shape
@@ -227,8 +233,8 @@ class Encoder(nn.Module):
         # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
         lengths = np.array([x.size for x in xs[0]], dtype=np.int32)
         xs_flatten = (np.concatenate(xs_each, axis=0) for xs_each in xs)
-        rs = [embed(_from_numpy(xs_each, np.int64, embed.weight.is_cuda))
-              for embed, xs_each in zip(self.embeds, xs_flatten)]
+        rs = [emb(_from_numpy(xs_each, torch.int64, emb.weight.get_device()))
+              for emb, xs_each in zip(self.embeds, xs_flatten)]
         rs = self._concat_embeds(rs)
         # => [(n, d_word + d_pos); B]
         if np.all(lengths == lengths[0]):
@@ -261,13 +267,8 @@ class Encoder(nn.Module):
         return self._hidden_size * 2
 
 
-def _from_numpy(x, dtype=None, cuda=False):
-    if dtype is not None:
-        x = x.astype(dtype)
-    x = torch.from_numpy(x)
-    if cuda:
-        x = x.cuda()
-    return x
+def _from_numpy(x, dtype=None, device=None):
+    return torch.from_numpy(x).to(dtype=dtype, device=device)
 
 
 class SequenceDropout(nn.Module):
@@ -296,7 +297,7 @@ def _embed_dropout(xs, p=0.5, training=True):
     masks = (np.random.rand(len(xs), xs[0].size(0)) >= p).astype(np.float32)
     scale = len(masks) / np.maximum(np.sum(masks, axis=0, keepdims=True), 1)
     masks = np.expand_dims(masks * scale, axis=2)
-    ys = [xs_each * _from_numpy(mask, cuda=xs_each.is_cuda)
+    ys = [xs_each * _from_numpy(mask, device=xs_each.get_device())
           for xs_each, mask in zip(xs, masks)]
     return ys
 
