@@ -1,4 +1,3 @@
-import chainer
 import numpy as np
 from teras.app import App, arg
 import teras.training as training
@@ -12,8 +11,6 @@ from eval import Evaluator
 import models
 
 
-chainer.Variable.__int__ = lambda self: int(self.data)
-chainer.Variable.__float__ = lambda self: float(self.data)
 logging.captureWarnings(True)
 
 
@@ -40,14 +37,18 @@ def train(train_file, test_file=None, embed_file=None,
 
     model = _build_parser(loader, **model_config)
     if device >= 0:
+        torch.cuda.set_device(device)
         model.cuda()
-    #     chainer.cuda.get_device_from_id(device).use()
-    #     model.to_gpu(device)
     optimizer = torch.optim.Adam(
         model.parameters(), lr, betas=(0.9, 0.9), eps=1e-12)
-    # optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
     # optimizer.add_hook(optimizers.ExponentialDecayAnnealing(
     #     initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
+
+    def _update(optimizer, loss):
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        optimizer.step()
 
     def _report(y, t):
         arc_accuracy, rel_accuracy = model.compute_accuracy(y, t)
@@ -55,9 +56,11 @@ def train(train_file, test_file=None, embed_file=None,
                          'rel_accuracy': rel_accuracy})
 
     trainer = training.Trainer(optimizer, model, loss_func=model.compute_loss)
-    trainer.configure(utils.training_config)
+    trainer.configure(update=_update)
     trainer.add_listener(
         training.listeners.ProgressBar(lambda n: tqdm(total=n)), priority=200)
+    trainer.add_hook(training.EPOCH_TRAIN_BEGIN, lambda _: model.train())
+    trainer.add_hook(training.EPOCH_VALIDATE_BEGIN, lambda _: model.eval())
     trainer.add_hook(
         training.BATCH_END, lambda data: _report(data['ys'], data['ts']))
     if test_dataset:
@@ -84,16 +87,16 @@ def test(model_file, test_file, device=-1):
     if context.model_config is not None:
         kwargs.update(context.model_config)
     model = _build_parser(**dict(kwargs))
-    chainer.serializers.load_npz(model_file, model)
+    model.load_state_dict(torch.load(model_file))
     if device >= 0:
-        chainer.cuda.get_device_from_id(device).use()
-        model.to_gpu(device)
+        torch.cuda.set_device(device)
+        model.cuda()
 
     pbar = training.listeners.ProgressBar(lambda n: tqdm(total=n))
     pbar.init(len(test_dataset))
     evaluator = Evaluator(
         model, context.loader.rel_map, test_file, logging.getLogger())
-    utils.chainer_train_off()
+    model.eval()
     for batch in test_dataset.batch(
             context.batch_size, colwise=True, shuffle=False):
         xs, ts = batch[:-1], batch[-1]
