@@ -221,10 +221,10 @@ class Encoder(nn.Module):
             torch.from_numpy(w), fixed) for w, fixed in embeddings)
         if lstm_hidden_size is None:
             lstm_hidden_size = lstm_in_size
-        # TODO: Implement recurrent dropout
-        self.bilstm = nn.LSTM(
+        self.bilstm = LSTM(
             lstm_in_size, lstm_hidden_size, n_lstm_layers,
-            batch_first=True, dropout=lstm_dropout, bidirectional=True)
+            batch_first=True, bidirectional=True,
+            dropout=lstm_dropout, recurrent_dropout=recurrent_dropout)
         self.embeddings_dropout = SequenceDropout(embeddings_dropout)
         self.lstm_dropout = nn.Dropout(lstm_dropout)
         self._hidden_size = lstm_hidden_size
@@ -299,6 +299,28 @@ def _embed_dropout(xs, p=0.5, training=True):
     ys = [xs_each * _from_numpy(mask, device=xs_each.get_device())
           for xs_each, mask in zip(xs, masks)]
     return ys
+
+
+class LSTM(nn.LSTM):
+    """LSTM with DropConnect."""
+    __constants__ = nn.LSTM.__constants__ + ['recurrent_dropout']
+
+    def __init__(self, *args, **kwargs):
+        self.recurrent_dropout = float(kwargs.pop('recurrent_dropout', 0.0))
+        super().__init__(*args, **kwargs)
+
+    def forward(self, input, hx=None):
+        if not self.training or self.recurrent_dropout == 0.0:
+            return super().forward(input, hx)
+        __flat_weights = self._flat_weights
+        p = self.recurrent_dropout
+        self._flat_weights = [
+            F.dropout(w, p) if name.startswith('weight_hh_') else w
+            for w, name in zip(__flat_weights, self._flat_weights_names)]
+        self.flatten_parameters()
+        ret = super().forward(input, hx)
+        self._flat_weights = __flat_weights
+        return ret
 
 
 class MLP(nn.Sequential):
