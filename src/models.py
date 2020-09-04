@@ -57,15 +57,14 @@ class BiaffineParser(nn.Module):
         return self._hs
 
     def parse(self, words, pretrained_words, postags, use_cache=True):
-        with chainer.no_backprop_mode():
-            if len(self._results) == 0 or not use_cache:
-                self.forward(words, pretrained_words, postags)
-            arcs = _parse_by_graph(self._logits_arc, self._lengths, self._mask)
-            rels = _decode_rels(self._logits_rel, arcs, self._lengths)
-            arcs = [arcs_i[:n] for arcs_i, n in zip(arcs, self._lengths)]
-            rels = [rels_i[:n] for rels_i, n in zip(rels, self._lengths)]
-            parsed = list(zip(arcs, rels))
-            return parsed
+        if len(self._results) == 0 or not use_cache:
+            self.forward(words, pretrained_words, postags)
+        arcs = _parse_by_graph(self._logits_arc, self._lengths, self._mask)
+        rels = _decode_rels(self._logits_rel, arcs, self._lengths)
+        arcs = [arcs_i[:n] for arcs_i, n in zip(arcs, self._lengths)]
+        rels = [rels_i[:n] for rels_i, n in zip(rels, self._lengths)]
+        parsed = list(zip(arcs, rels))
+        return parsed
 
     def compute_loss(self, y, t):
         self._results = _compute_metrics(y, t, self._lengths, False)
@@ -95,10 +94,10 @@ def _mask_arc(logits_arc, lengths, mask_loop=True):
 
 
 def _parse_by_graph(logits_arc, lengths, mask=None):
-    probs = F.softmax(logits_arc, axis=2).data
+    probs = F.softmax(logits_arc, dim=2).detach()
     if mask is not None:
-        probs *= mask
-    probs = chainer.cuda.to_cpu(probs)
+        probs.mul_(mask)
+    probs = probs.cpu().numpy()
     trees = np.full((len(lengths), max(lengths)), -1, dtype=np.int32)
     for i, (probs_i, length) in enumerate(zip(probs, lengths)):
         trees[i, 1:length] = mst.mst(probs_i[:length, :length])[0][1:]
@@ -108,10 +107,10 @@ def _parse_by_graph(logits_arc, lengths, mask=None):
 def _decode_rels(logits_rel, trees, lengths, root=0):
     steps = np.arange(trees.shape[1])
     logits_rel = [logits_rel[i, steps, arcs] for i, arcs in enumerate(trees)]
-    logits_rel = F.stack(logits_rel, axis=0).data
+    logits_rel = torch.stack(logits_rel, dim=0).detach()
     logits_rel[:, :, root] = -1e8
-    rels = logits_rel.argmax(axis=2)
-    rels = chainer.cuda.to_cpu(rels)
+    rels = logits_rel.argmax(dim=2)
+    rels = rels.cpu().numpy()
     for rels_i, arcs_i in zip(rels, trees):
         rels_i[:] = np.where(arcs_i == 0, root, rels_i)
     rels[:, 0] = -1
@@ -174,7 +173,7 @@ def _accuracy(y, t, ignore_index=None):
     else:
         count = (pred == t).sum()
         total = t.numel()
-    return count, total
+    return count.item(), total.item()
 
 
 def _np_pad_sequence(xs, padding=0):
