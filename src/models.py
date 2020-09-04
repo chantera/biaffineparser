@@ -235,16 +235,15 @@ class Encoder(nn.Module):
         xs_flatten = (np.concatenate(xs_each, axis=0) for xs_each in xs)
         rs = [emb(_from_numpy(xs_each, torch.int64, emb.weight.get_device()))
               for emb, xs_each in zip(self.embeds, xs_flatten)]
-        rs = self._concat_embeds(rs)
+        rs = self.lstm_dropout(self._concat_embeds(rs))
         # => [(n, d_word + d_pos); B]
         if np.all(lengths == lengths[0]):
-            sections = int(lengths[0])
+            hs, _ = self.bilstm(rs.view(len(lengths), lengths[0], -1))
         else:
-            sections = tuple(lengths)
-        rs = torch.split(self.lstm_dropout(rs), sections, dim=0)
-        rs = nn.utils.rnn.pack_sequence(rs, enforce_sorted=False)
-        hs, _ = self.bilstm(rs)
-        hs, _ = nn.utils.rnn.pad_packed_sequence(hs, batch_first=True)
+            rs = torch.split(rs, tuple(lengths), dim=0)
+            rs = nn.utils.rnn.pack_sequence(rs, enforce_sorted=False)
+            hs, _ = self.bilstm(rs)
+            hs, _ = nn.utils.rnn.pad_packed_sequence(hs, batch_first=True)
         hs = self.lstm_dropout(hs)
         return hs, lengths
 
