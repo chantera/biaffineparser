@@ -51,7 +51,16 @@ class Saver(training.listeners.Saver):
 set_debug(chainer.config.debug)
 chainer.config.use_cudnn = 'auto'
 
-training_config = {'hooks': {
-    training.EPOCH_TRAIN_BEGIN: chainer_train_on,
-    training.EPOCH_VALIDATE_BEGIN: chainer_train_off,
-}}
+# training_config = {'hooks': {
+#     training.EPOCH_TRAIN_BEGIN: chainer_train_on,
+#     training.EPOCH_VALIDATE_BEGIN: chainer_train_off,
+# }}
+
+
+def _update(optimizer, loss):
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+
+training_config = {'update': _update}

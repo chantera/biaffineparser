@@ -3,6 +3,7 @@ import numpy as np
 from teras.app import App, arg
 import teras.training as training
 from teras.utils import git, logging
+import torch
 from tqdm import tqdm
 
 from common import optimizers, utils
@@ -39,14 +40,14 @@ def train(train_file, test_file=None, embed_file=None,
 
     model = _build_parser(loader, **model_config)
     if device >= 0:
-        chainer.cuda.get_device_from_id(device).use()
-        model.to_gpu(device)
-    optimizer = chainer.optimizers.Adam(
-        alpha=lr, beta1=0.9, beta2=0.9, eps=1e-12)
-    optimizer.setup(model)
-    optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
-    optimizer.add_hook(optimizers.ExponentialDecayAnnealing(
-        initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
+        model.cuda()
+    #     chainer.cuda.get_device_from_id(device).use()
+    #     model.to_gpu(device)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr, betas=(0.9, 0.9), eps=1e-12)
+    # optimizer.add_hook(chainer.optimizer.GradientClipping(5.0))
+    # optimizer.add_hook(optimizers.ExponentialDecayAnnealing(
+    #     initial_lr=lr, decay_rate=0.75, decay_step=5000, lr_key='alpha'))
 
     def _report(y, t):
         arc_accuracy, rel_accuracy = model.compute_accuracy(y, t)
