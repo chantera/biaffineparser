@@ -26,10 +26,17 @@ class BiaffineParser(nn.Module):
             rel_mlp_units = [rel_mlp_units]
 
         def _create_mlp(in_size, units, dropout):
-            return MLP([MLP.Layer(
-                units[i - 1] if i > 0 else in_size, u,
-                lambda x: F.leaky_relu(x, negative_slope=0.1), dropout)
-                        for i, u in enumerate(units)])
+            return MLP(
+                [
+                    MLP.Layer(
+                        units[i - 1] if i > 0 else in_size,
+                        u,
+                        lambda x: F.leaky_relu(x, negative_slope=0.1),
+                        dropout,
+                    )
+                    for i, u in enumerate(units)
+                ]
+            )
 
         self.encoder = encoder
         h_dim = self.encoder.out_size
@@ -50,8 +57,7 @@ class BiaffineParser(nn.Module):
         hs_rel_h = self.mlp_rel_head(hs)
         hs_rel_d = self.mlp_rel_dep(hs)
         self._logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
-        self._mask = _mask_arc(
-            self._logits_arc, self._lengths, mask_loop=not(self.training))
+        self._mask = _mask_arc(self._logits_arc, self._lengths, mask_loop=not (self.training))
         if self._mask is not None:
             self._logits_arc.masked_fill_(self._mask.logical_not(), -1e8)
         self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
@@ -74,19 +80,21 @@ class BiaffineParser(nn.Module):
 
     def compute_loss(self, y, t):
         self._results = _compute_metrics(y, t, self._lengths, False)
-        return self._results['arc_loss'] + self._results['rel_loss']
+        return self._results["arc_loss"] + self._results["rel_loss"]
 
     def compute_accuracy(self, y, t, use_cache=True):
-        arc_accuracy = self._results.get('arc_accuracy', None)
-        rel_accuracy = self._results.get('rel_accuracy', None)
+        arc_accuracy = self._results.get("arc_accuracy", None)
+        rel_accuracy = self._results.get("rel_accuracy", None)
         if not use_cache or (arc_accuracy is None and rel_accuracy is None):
             results = _compute_metrics(y, t, self._lengths, False)
-            arc_accuracy = results.get('arc_accuracy', None)
-            rel_accuracy = results.get('rel_accuracy', None)
-            self._results.update({
-                'arc_accuracy': arc_accuracy,
-                'rel_accuracy': rel_accuracy,
-            })
+            arc_accuracy = results.get("arc_accuracy", None)
+            rel_accuracy = results.get("rel_accuracy", None)
+            self._results.update(
+                {
+                    "arc_accuracy": arc_accuracy,
+                    "rel_accuracy": rel_accuracy,
+                }
+            )
         return arc_accuracy, rel_accuracy
 
 
@@ -129,51 +137,61 @@ def _decode_rels(logits_rel, trees, lengths, root=0):
     return rels
 
 
-def _compute_metrics(parsed, gold_batch, lengths,
-                     use_predicted_arcs_for_rels=True):
+def _compute_metrics(parsed, gold_batch, lengths, use_predicted_arcs_for_rels=True):
     logits_arc, logits_rel, *_ = parsed
     true_arcs, true_rels, *_ = zip(*gold_batch)
 
     # exclude attachment from the root
     logits_arc, logits_rel = logits_arc[:, 1:], logits_rel[:, 1:]
-    true_arcs = _from_numpy(_np_pad_sequence(true_arcs, padding=-1)[:, 1:],
-                            dtype=torch.int64, device=logits_arc.get_device())
-    true_rels = _from_numpy(_np_pad_sequence(true_rels, padding=-1)[:, 1:],
-                            dtype=torch.int64, device=logits_rel.get_device())
+    true_arcs = _from_numpy(
+        _np_pad_sequence(true_arcs, padding=-1)[:, 1:],
+        dtype=torch.int64,
+        device=logits_arc.get_device(),
+    )
+    true_rels = _from_numpy(
+        _np_pad_sequence(true_rels, padding=-1)[:, 1:],
+        dtype=torch.int64,
+        device=logits_rel.get_device(),
+    )
     lengths = lengths - 1
 
     b, n_deps, n_heads = logits_arc.shape
     logits_arc_flatten = logits_arc.contiguous().view(b * n_deps, n_heads)
     true_arcs_flatten = true_arcs.contiguous().view(b * n_deps)
-    arc_loss = F.cross_entropy(logits_arc_flatten, true_arcs_flatten,
-                               ignore_index=-1, reduction='sum')
+    arc_loss = F.cross_entropy(
+        logits_arc_flatten, true_arcs_flatten, ignore_index=-1, reduction="sum"
+    )
     arc_loss.div_(lengths.sum())
-    arc_accuracy = _accuracy(
-        logits_arc_flatten, true_arcs_flatten, ignore_index=-1)
+    arc_accuracy = _accuracy(logits_arc_flatten, true_arcs_flatten, ignore_index=-1)
 
     if use_predicted_arcs_for_rels:
         parsed_arcs = logits_arc.argmax(dim=2)
     else:
         parsed_arcs = true_arcs.masked_fill(true_arcs == -1, 0)
     b, n_deps, n_heads, n_rels = logits_rel.shape
-    logits_rel = logits_rel.gather(dim=2, index=parsed_arcs.view(
-        *parsed_arcs.size(), 1, 1).expand(-1, -1, -1, n_rels))
+    logits_rel = logits_rel.gather(
+        dim=2, index=parsed_arcs.view(*parsed_arcs.size(), 1, 1).expand(-1, -1, -1, n_rels)
+    )
     logits_rel_flatten = logits_rel.contiguous().view(b * n_deps, n_rels)
     true_rels_flatten = true_rels.contiguous().view(b * n_deps)
-    rel_loss = F.cross_entropy(logits_rel_flatten, true_rels_flatten,
-                               ignore_index=-1, reduction='sum')
+    rel_loss = F.cross_entropy(
+        logits_rel_flatten, true_rels_flatten, ignore_index=-1, reduction="sum"
+    )
     rel_loss.div_(lengths.sum())
-    rel_accuracy = _accuracy(
-        logits_rel_flatten, true_rels_flatten, ignore_index=-1)
+    rel_accuracy = _accuracy(logits_rel_flatten, true_rels_flatten, ignore_index=-1)
 
-    return {'arc_loss': arc_loss, 'arc_accuracy': arc_accuracy,
-            'rel_loss': rel_loss, 'rel_accuracy': rel_accuracy}
+    return {
+        "arc_loss": arc_loss,
+        "arc_accuracy": arc_accuracy,
+        "rel_loss": rel_loss,
+        "rel_accuracy": rel_accuracy,
+    }
 
 
 def _accuracy(y, t, ignore_index=None):
     pred = y.argmax(dim=1)
     if ignore_index is not None:
-        mask = (t == ignore_index)
+        mask = t == ignore_index
         ignore_cnt = mask.sum()
         ignore = torch.tensor([ignore_index], dtype=torch.int64)
         if pred.is_cuda:
@@ -238,9 +256,14 @@ class BiLSTMEncoder(Encoder):
         if lstm_hidden_size is None:
             lstm_hidden_size = lstm_in_size
         self.bilstm = LSTM(
-            lstm_in_size, lstm_hidden_size, n_lstm_layers,
-            batch_first=True, bidirectional=True,
-            dropout=lstm_dropout, recurrent_dropout=recurrent_dropout)
+            lstm_in_size,
+            lstm_hidden_size,
+            n_lstm_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=lstm_dropout,
+            recurrent_dropout=recurrent_dropout,
+        )
         self.embeddings_dropout = SequenceDropout(embeddings_dropout)
         self.lstm_dropout = nn.Dropout(lstm_dropout)
         self._hidden_size = lstm_hidden_size
@@ -250,8 +273,10 @@ class BiLSTMEncoder(Encoder):
         # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
         lengths = np.array([x.size for x in xs[0]], dtype=np.int32)
         xs_flatten = (np.concatenate(xs_each, axis=0) for xs_each in xs)
-        rs = [emb(_from_numpy(xs_each, torch.int64, emb.weight.get_device()))
-              for emb, xs_each in zip(self.embeds, xs_flatten)]
+        rs = [
+            emb(_from_numpy(xs_each, torch.int64, emb.weight.get_device()))
+            for emb, xs_each in zip(self.embeds, xs_flatten)
+        ]
         rs = self.lstm_dropout(self._concat_embeds(rs))
         # => [(n, d_word + d_pos); B]
         if np.all(lengths == lengths[0]):
@@ -266,8 +291,7 @@ class BiLSTMEncoder(Encoder):
 
     def _concat_embeds(self, embed_outputs):
         rs_postags = embed_outputs.pop() if self._use_postag else None
-        rs_words_pretrained = embed_outputs.pop() \
-            if self._use_pretrained_word else None
+        rs_words_pretrained = embed_outputs.pop() if self._use_pretrained_word else None
         rs_words = embed_outputs.pop()
         if rs_words_pretrained is not None:
             rs_words += rs_words_pretrained
@@ -288,19 +312,19 @@ def _from_numpy(x, dtype=None, device=None):
 
 
 class SequenceDropout(nn.Module):
-
     def __init__(self, p=0.5):
         super().__init__()
         if p < 0 or p > 1:
-            raise ValueError("dropout probability has to be between 0 and 1, "
-                             "but got {}".format(p))
+            raise ValueError(
+                "dropout probability has to be between 0 and 1, " "but got {}".format(p)
+            )
         self.p = p
 
     def forward(self, xs):
         return _embed_dropout(xs, self.p, self.training)
 
     def extra_repr(self):
-        return 'p={}'.format(self.p)
+        return "p={}".format(self.p)
 
 
 def _embed_dropout(xs, p=0.5, training=True):
@@ -313,17 +337,20 @@ def _embed_dropout(xs, p=0.5, training=True):
     masks = (np.random.rand(len(xs), xs[0].size(0)) >= p).astype(np.float32)
     scale = len(masks) / np.maximum(np.sum(masks, axis=0, keepdims=True), 1)
     masks = np.expand_dims(masks * scale, axis=2)
-    ys = [xs_each * _from_numpy(mask, device=xs_each.get_device())
-          for xs_each, mask in zip(xs, masks)]
+    ys = [
+        xs_each * _from_numpy(mask, device=xs_each.get_device())
+        for xs_each, mask in zip(xs, masks)
+    ]
     return ys
 
 
 class LSTM(nn.LSTM):
     """LSTM with DropConnect."""
-    __constants__ = nn.LSTM.__constants__ + ['recurrent_dropout']
+
+    __constants__ = nn.LSTM.__constants__ + ["recurrent_dropout"]
 
     def __init__(self, *args, **kwargs):
-        self.recurrent_dropout = float(kwargs.pop('recurrent_dropout', 0.0))
+        self.recurrent_dropout = float(kwargs.pop("recurrent_dropout", 0.0))
         super().__init__(*args, **kwargs)
 
     def forward(self, input, hx=None):
@@ -332,8 +359,9 @@ class LSTM(nn.LSTM):
         __flat_weights = self._flat_weights
         p = self.recurrent_dropout
         self._flat_weights = [
-            F.dropout(w, p) if name.startswith('weight_hh_') else w
-            for w, name in zip(__flat_weights, self._flat_weights_names)]
+            F.dropout(w, p) if name.startswith("weight_hh_") else w
+            for w, name in zip(__flat_weights, self._flat_weights_names)
+        ]
         self.flatten_parameters()
         ret = super().forward(input, hx)
         self._flat_weights = __flat_weights
@@ -341,19 +369,15 @@ class LSTM(nn.LSTM):
 
 
 class MLP(nn.Sequential):
-
     def __init__(self, layers):
         assert all(isinstance(layer, MLP.Layer) for layer in layers)
         super().__init__(*layers)
 
     class Layer(nn.Module):
-
-        def __init__(self, in_size, out_size=None,
-                     activation=None, dropout=0.0, bias=True):
+        def __init__(self, in_size, out_size=None, activation=None, dropout=0.0, bias=True):
             super().__init__()
             if activation is not None and not callable(activation):
-                raise TypeError("activation must be callable: type={}"
-                                .format(type(activation)))
+                raise TypeError("activation must be callable: type={}".format(type(activation)))
             self.linear = nn.Linear(in_size, out_size, bias)
             self.activate = activation
             self.dropout = nn.Dropout(dropout)
@@ -366,19 +390,15 @@ class MLP(nn.Sequential):
 
 
 class Biaffine(nn.Module):
-
     def __init__(self, in1_features, in2_features, out_features):
         super().__init__()
-        self.bilinear = PairwiseBilinear(
-            in1_features + 1, in2_features + 1, out_features)
+        self.bilinear = PairwiseBilinear(in1_features + 1, in2_features + 1, out_features)
         self.bilinear.weight.data.zero_()
         self.bilinear.bias.data.zero_()
 
     def forward(self, input1, input2):
-        input1 = torch.cat([input1, input1.new_ones(*input1.size()[:-1], 1)],
-                           dim=input1.dim() - 1)
-        input2 = torch.cat([input2, input2.new_ones(*input2.size()[:-1], 1)],
-                           dim=input2.dim() - 1)
+        input1 = torch.cat([input1, input1.new_ones(*input1.size()[:-1], 1)], dim=input1.dim() - 1)
+        input2 = torch.cat([input2, input2.new_ones(*input2.size()[:-1], 1)], dim=input2.dim() - 1)
         return self.bilinear(input1, input2)
 
 
@@ -392,12 +412,11 @@ class PairwiseBilinear(nn.Module):
         self.in1_features = in1_features
         self.in2_features = in2_features
         self.out_features = out_features
-        self.weight = nn.Parameter(
-            torch.Tensor(in1_features, out_features, in2_features))
+        self.weight = nn.Parameter(torch.Tensor(in1_features, out_features, in2_features))
         if bias:
             self.bias = nn.Parameter(torch.Tensor(out_features))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -420,6 +439,6 @@ class PairwiseBilinear(nn.Module):
         return y
 
     def extra_repr(self) -> str:
-        return 'in1_features={}, in2_features={}, out_features={}, bias={}' \
-            .format(self.in1_features, self.in2_features, self.out_features,
-                    self.bias is not None)
+        return "in1_features={}, in2_features={}, out_features={}, bias={}".format(
+            self.in1_features, self.in2_features, self.out_features, self.bias is not None
+        )

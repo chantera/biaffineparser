@@ -58,8 +58,9 @@ def _arc_argmax(probs):
         old_heads = heads[cycle]
         old_probs = probs[cycle, old_heads]
         non_heads = np.array(list(dependents))
-        probs[np.repeat(cycle, len(non_heads)),
-              np.repeat([non_heads], len(cycle), axis=0).flatten()] = 0
+        probs[
+            np.repeat(cycle, len(non_heads)), np.repeat([non_heads], len(cycle), axis=0).flatten()
+        ] = 0
         new_heads = np.argmax(probs[cycle][:, tokens], axis=1) + 1
         new_probs = probs[cycle, new_heads] / old_probs
         change = np.argmax(new_probs)
@@ -126,7 +127,7 @@ def _find_cycle(vertices, edges):
                 w = stack.pop()
                 onstack[w] = False
                 SCC.add(w)
-                if not(w != v):
+                if not (w != v):
                     break
             SCCs.append(SCC)
 
