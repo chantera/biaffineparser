@@ -1,84 +1,124 @@
-import numpy as np
-from teras.app import App, arg
-import teras.training as training
-from teras.utils import git, logging
+import logging
+from functools import partial
+
 import torch
-from tqdm import tqdm
 
-from common import utils
-import dataset
-from eval import Evaluator
 import models
-
+import utils
+from data import Preprocessor, read_conll
 
 logging.captureWarnings(True)
+logger = logging.getLogger(__name__)
 
 
-def train(train_file, test_file=None, embed_file=None,
-          n_epoch=20, batch_size=5000, lr=2e-3, model_config=None, device=-1,
-          save_dir=None, seed=None, cache_dir='', refresh_cache=False):
+def train(
+    train_file,
+    eval_file=None,
+    embed_file=None,
+    epochs=20,
+    batch_size=5000,
+    lr=2e-3,
+    cuda=False,
+    save_dir=None,
+    seed=None,
+    cache_dir=None,
+    refresh_cache=False,
+):
     if seed is not None:
-        utils.set_random_seed(seed, device)
-    logger = logging.getLogger()
-    assert isinstance(logger, logging.AppLogger)
-    if model_config is None:
-        model_config = {}
+        utils.seed_everything(seed)
+    device = torch.device("cuda" if cuda else "cpu")
 
-    loader = dataset.DataLoader.build(
-        input_file=train_file, word_embed_file=embed_file,
-        refresh_cache=refresh_cache, extra_ids=(git.hash(),),
-        cache_options=dict(dir=cache_dir, mkdir=True, logger=logger))
-    train_dataset = loader.load(train_file, train=True, bucketing=True,
-                                refresh_cache=refresh_cache)
-    test_dataset = None
-    if test_file is not None:
-        test_dataset = loader.load(test_file, train=False, bucketing=True,
-                                   refresh_cache=refresh_cache)
+    preprocessor = Preprocessor()
+    preprocessor.build_vocab(train_file)
+    if embed_file:
+        preprocessor.load_embeddings(embed_file)
+    loader_config = dict(
+        batch_size=batch_size,
+        map_fn=preprocessor.transform,
+        collate_fn=partial(collate, device=device),
+    )
+    train_dataloader = create_dataloader(read_conll(train_file), **loader_config, shuffle=True)
+    eval_dataloader = None
+    if eval_file:
+        eval_dataloader = create_dataloader(read_conll(eval_file), **loader_config, shuffle=False)
 
-    model = _build_parser(loader, **model_config)
-    if device >= 0:
-        torch.cuda.set_device(device)
-        model.cuda()
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr, betas=(0.9, 0.9), eps=1e-12)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda epoch: 0.75 ** (epoch / 5000))
+    model_config = dict(
+        word_vocab_size=len(preprocessor.vocabs["word"]),
+        pretrained_word_vocab_size=len(preprocessor.vocabs["word"]),
+        postag_vocab_size=len(preprocessor.vocabs["postag"]),
+        pretrained_word_embeddings=preprocessor.pretrained_word_embeddings,
+        n_rels=len(preprocessor.vocabs["rel"]),
+    )
+    model = build_model(**model_config)
+    model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr, betas=(0.9, 0.9), eps=1e-12)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 0.75 ** (epoch / 5000))
 
-    def _update(optimizer, loss):
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-        optimizer.step()
-        scheduler.step()
-
-    def _report(y, t):
-        arc_accuracy, rel_accuracy = model.compute_accuracy(y, t)
-        training.report({'arc_accuracy': arc_accuracy,
-                         'rel_accuracy': rel_accuracy})
-
-    trainer = training.Trainer(optimizer, model, loss_func=model.compute_loss)
-    trainer.configure(update=_update)
-    trainer.add_listener(
-        training.listeners.ProgressBar(lambda n: tqdm(total=n)), priority=200)
-    trainer.add_hook(training.EPOCH_TRAIN_BEGIN, lambda _: model.train())
-    trainer.add_hook(training.EPOCH_VALIDATE_BEGIN, lambda _: model.eval())
-    trainer.add_hook(
-        training.BATCH_END, lambda data: _report(data['ys'], data['ts']))
-    if test_dataset:
-        evaluator = Evaluator(model, loader.rel_map, test_file, logger)
-        trainer.add_listener(evaluator, priority=128)
-        if save_dir is not None:
-            accessid = logger.accessid
-            date = logger.accesstime.strftime('%Y%m%d')
-            trainer.add_listener(
-                utils.Saver(model, basename="{}-{}".format(date, accessid),
-                            context=dict(App.context, loader=loader),
-                            directory=save_dir, logger=logger, save_best=True,
-                            evaluate=(lambda _: evaluator._parsed['UAS'])))
-    trainer.fit(train_dataset, test_dataset, n_epoch, batch_size)
+    trainer = utils.training.Trainer(model, (optimizer, scheduler), step, epoch=epochs)
+    trainer.fit(train_dataloader, eval_dataloader)
 
 
-def test(model_file, test_file, device=-1):
+def create_dataloader(examples, map_fn=None, **kwargs):
+    if map_fn:
+        examples = map(map_fn, examples)
+    dataset = ListDataset(examples)
+    print(len(dataset))
+    loader = torch.utils.data.DataLoader(dataset, **kwargs)
+    return loader
+
+
+class ListDataset(list, torch.utils.data.Dataset):
+    pass
+
+
+def collate(batch, device=None):
+    batch = ([torch.tensor(col, device=device) for col in row] for row in batch)
+    return [list(field) for field in zip(*batch)]
+
+
+def build_model(**kwargs):
+    embeddings = [
+        (kwargs.get(f"{name}_vocab_size", 1), kwargs.get(f"{name}_embed_size", 100))
+        for name in ["word", "pretrained_word", "postag"]
+    ]
+    embeddings[1] = kwargs.get("pretrained_word_embeddings") or embeddings[1]
+    dropout_ratio = kwargs.get("dropout", 0.33)
+    encoder = models.BiLSTMEncoder(
+        embeddings,
+        reduce_embeddings=[0, 1],
+        n_lstm_layers=kwargs.get("n_lstm_layers", 3),
+        lstm_hidden_size=kwargs.get("lstm_hidden_size", 400),
+        embeddings_dropout=kwargs.get("embeddings_dropout", dropout_ratio),
+        lstm_dropout=kwargs.get("lstm_dropout", dropout_ratio),
+        recurrent_dropout=kwargs.get("recurrent_dropout", dropout_ratio),
+    )
+    model = models.BiaffineParser(
+        encoder,
+        n_rels=kwargs.get("n_rels"),
+        arc_mlp_units=kwargs.get("arc_mlp_units", 500),
+        rel_mlp_units=kwargs.get("rel_mlp_units", 100),
+        arc_mlp_dropout=kwargs.get("arc_mlp_dropout", dropout_ratio),
+        rel_mlp_dropout=kwargs.get("rel_mlp_dropout", dropout_ratio),
+    )
+    return model
+
+
+def step(model, batch):
+    *xs, heads, rels = batch
+    logits_arc, logits_rel = model(*xs)
+    loss = model.compute_loss((logits_arc, logits_rel), (heads, rels))
+    arc_accuracy, rel_accuracy = model.compute_accuracy((logits_arc, logits_rel), (heads, rels))
+    output = {
+        "loss": loss,
+        "arc_accuracy": arc_accuracy,
+        "rel_accuracy": rel_accuracy,
+    }
+    return output
+
+
+def test(model_file, test_file, cuda=False):
+    raise NotImplementedError
+    """
     context = utils.Saver.load_context(model_file)
     if context.seed is not None:
         utils.set_random_seed(context.seed, device)
@@ -95,88 +135,57 @@ def test(model_file, test_file, device=-1):
 
     pbar = training.listeners.ProgressBar(lambda n: tqdm(total=n))
     pbar.init(len(test_dataset))
-    evaluator = Evaluator(
-        model, context.loader.rel_map, test_file, logging.getLogger())
+    evaluator = Evaluator(model, context.loader.rel_map, test_file, logging.getLogger())
     model.eval()
-    for batch in test_dataset.batch(
-            context.batch_size, colwise=True, shuffle=False):
+    for batch in test_dataset.batch(context.batch_size, colwise=True, shuffle=False):
         xs, ts = batch[:-1], batch[-1]
         ys = model.forward(*xs)
-        evaluator.on_batch_end({'train': False, 'xs': xs, 'ys': ys, 'ts': ts})
+        evaluator.on_batch_end({"train": False, "xs": xs, "ys": ys, "ts": ts})
         pbar.update(len(ts))
     evaluator.on_epoch_validate_end({})
-
-
-def _build_parser(loader, **kwargs):
-    dropout_ratio = kwargs.get('dropout', 0.33)
-    parser = models.BiaffineParser(
-        n_rels=len(loader.rel_map),
-        encoder=models.Encoder(
-            loader.get_embeddings('word'),
-            loader.get_embeddings('pre', normalize=lambda W: W / np.std(W)
-                                  if np.std(W) > 0. else W),
-            loader.get_embeddings('pos'),
-            n_lstm_layers=kwargs.get('n_lstm_layers', 3),
-            lstm_hidden_size=kwargs.get('lstm_hidden_size', 400),
-            embeddings_dropout=kwargs.get('input_dropout', dropout_ratio),
-            lstm_dropout=kwargs.get('lstm_dropout', dropout_ratio),
-            recurrent_dropout=kwargs.get('recurrent_dropout', dropout_ratio)),
-        arc_mlp_units=kwargs.get('arc_mlp_units', 500),
-        rel_mlp_units=kwargs.get('rel_mlp_units', 100),
-        arc_mlp_dropout=kwargs.get('arc_mlp_dropout', dropout_ratio),
-        rel_mlp_dropout=kwargs.get('rel_mlp_dropout', dropout_ratio))
-    return parser
+    """
 
 
 if __name__ == "__main__":
-    App.configure(logdir=App.basedir + '/../logs', loglevel='debug')
-    logging.AppLogger.configure(mkdir=True)
-    App.add_command('train', train, {
-        'batch_size':
-        arg('--batchsize', type=int, default=5000, metavar='NUM',
-            help='Number of tokens in each mini-batch'),
-        'cache_dir':
-        arg('--cachedir', type=str, default=(App.basedir + '/../cache'),
-            metavar='DIR', help='Cache directory'),
-        'test_file':
-        arg('--devfile', type=str, default=None, metavar='FILE',
-            help='Development data file'),
-        'device':
-        arg('--device', type=int, default=-1, metavar='ID',
-            help='Device ID (negative value indicates CPU)'),
-        'embed_file':
-        arg('--embedfile', type=str, default=None, metavar='FILE',
-            help='Pretrained word embedding file'),
-        'n_epoch':
-        arg('--epoch', type=int, default=300, metavar='NUM',
-            help='Number of sweeps over the dataset to train'),
-        'lr':
-        arg('--lr', type=float, default=2e-3, metavar='VALUE',
-            help='Learning rate'),
-        'model_config':
-        arg('--model', action='store_dict', metavar='KEY=VALUE',
-            help='Model configuration'),
-        'refresh_cache':
-        arg('--refresh', '-r', action='store_true', help='Refresh cache.'),
-        'save_dir':
-        arg('--savedir', type=str, default=None, metavar='DIR',
-            help='Directory to save the model'),
-        'seed':
-        arg('--seed', type=int, default=None, metavar='VALUE',
-            help='Random seed'),
-        'train_file':
-        arg('--trainfile', type=str, required=True, metavar='FILE',
-            help='Training data file.'),
-    })
-    App.add_command('test', test, {
-        'device':
-        arg('--device', type=int, default=-1, metavar='ID',
-            help='Device ID (negative value indicates CPU)'),
-        'model_file':
-        arg('--modelfile', type=str, required=True, metavar='FILE',
-            help='Trained model file'),
-        'test_file':
-        arg('--testfile', type=str, required=True, metavar='FILE',
-            help='Test data file'),
-    })
-    App.run()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+
+    subparser = subparsers.add_parser("train")
+    subparser.add_argument("--train_file", type=str, required=True, metavar="FILE")
+    subparser.add_argument("--eval_file", type=str, default=None, metavar="FILE")
+    subparser.add_argument("--embed_file", type=str, default=None, metavar="FILE")
+    subparser.add_argument("--epochs", type=int, default=300, metavar="NUM")
+    subparser.add_argument("--batch_size", type=int, default=5000, metavar="NUM")
+    subparser.add_argument("--lr", type=float, default=2e-3, metavar="VALUE")
+    subparser.add_argument("--cuda", action="store_true")
+    subparser.add_argument("--save_dir", type=str, default=None, metavar="DIR")
+    subparser.add_argument("--seed", type=int, default=None, metavar="VALUE", help="Random seed")
+    subparser.add_argument("--cache_dir", type=str, default=None, metavar="DIR")
+    subparser.add_argument("--refresh", "-r", action="store_true")
+
+    subparser = subparsers.add_parser("test")
+    subparser.add_argument("--model_file", type=str, required=True, metavar="FILE")
+    subparser.add_argument("--test_file", type=str, required=True, metavar="FILE")
+    subparser.add_argument("--cuda", action="store_true")
+
+    args = parser.parse_args()
+    if args.command == "train":
+        train(
+            args.train_file,
+            args.eval_file,
+            args.embed_file,
+            args.epochs,
+            args.batch_size,
+            args.lr,
+            args.cuda,
+            args.save_dir,
+            args.seed,
+            args.cache_dir,
+            args.refresh,
+        )
+    if args.command == "test":
+        test(args.model_file, args.test_file, args.cuda)
+    else:
+        parser.print_help()

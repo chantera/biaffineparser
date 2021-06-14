@@ -1,3 +1,5 @@
+from typing import Iterable, Optional, Sequence, Tuple, Union
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,11 +9,17 @@ from common import mst
 
 
 class BiaffineParser(nn.Module):
-
-    def __init__(self, n_rels, encoder,
-                 arc_mlp_units=500, rel_mlp_units=100,
-                 arc_mlp_dropout=0.0, rel_mlp_dropout=0.0):
+    def __init__(
+        self,
+        encoder: "Encoder",
+        n_rels: Optional[int] = None,
+        arc_mlp_units: int = 500,
+        rel_mlp_units: int = 100,
+        arc_mlp_dropout: float = 0.0,
+        rel_mlp_dropout: float = 0.0,
+    ):
         super().__init__()
+        assert n_rels is not None  # TODO: support unlabeled parsing
         if isinstance(arc_mlp_units, int):
             arc_mlp_units = [arc_mlp_units]
         if isinstance(rel_mlp_units, int):
@@ -196,29 +204,37 @@ def _np_pad_sequence(xs, padding=0):
 
 
 class Encoder(nn.Module):
+    def forward(self, *xs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns the encoded sequences and their lengths."""
+        raise NotImplementedError
 
-    def __init__(self,
-                 word_embeddings,
-                 pretrained_word_embeddings=None,
-                 postag_embeddings=None,
-                 n_lstm_layers=3,
-                 lstm_hidden_size=None,
-                 embeddings_dropout=0.0,
-                 lstm_dropout=0.0,
-                 recurrent_dropout=0.0):
+
+class BiLSTMEncoder(Encoder):
+    def __init__(
+        self,
+        embeddings: Iterable[Union[torch.Tensor, Tuple[int, int]]],
+        reduce_embeddings: Optional[Sequence[int]] = None,
+        n_lstm_layers: int = 3,
+        lstm_hidden_size: Optional[int] = None,
+        embeddings_dropout: float = 0.0,
+        lstm_dropout: float = 0.0,
+        recurrent_dropout: float = 0.0,
+    ):
         super().__init__()
-        self._use_pretrained_word = self._use_postag = False
-        embeddings = [(word_embeddings, False)]  # (weights, fixed)
-        lstm_in_size = word_embeddings.shape[1]
-        if pretrained_word_embeddings is not None:
-            embeddings.append((pretrained_word_embeddings, True))
-            self._use_pretrained_word = True
-        if postag_embeddings is not None:
-            embeddings.append((postag_embeddings, False))
-            lstm_in_size += postag_embeddings.shape[1]
-            self._use_postag = True
-        self.embeds = nn.ModuleList(nn.Embedding.from_pretrained(
-            torch.from_numpy(w), fixed) for w, fixed in embeddings)
+        self.embeds = nn.ModuleList()
+        for item in embeddings:
+            if isinstance(item, tuple):
+                size, dim = item
+                emb = nn.Embedding(size, dim)
+            else:
+                emb = nn.Embedding.from_pretrained(item, freeze=True)
+            self.embeds.append(emb)
+        self._reduce_embs = reduce_embeddings or []
+
+        embed_dims = [emb.weight.size(1) for emb in self.embeds]
+        lstm_in_size = sum(embed_dims)
+        if self._reduce_embs:
+            lstm_in_size -= embed_dims[self._reduce_embs[0]] * (len(self._reduce_embs) - 1)
         if lstm_hidden_size is None:
             lstm_hidden_size = lstm_in_size
         self.bilstm = LSTM(
@@ -229,7 +245,8 @@ class Encoder(nn.Module):
         self.lstm_dropout = nn.Dropout(lstm_dropout)
         self._hidden_size = lstm_hidden_size
 
-    def forward(self, *xs):
+    def forward(self, *xs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError  # TODO: implement
         # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
         lengths = np.array([x.size for x in xs[0]], dtype=np.int32)
         xs_flatten = (np.concatenate(xs_each, axis=0) for xs_each in xs)

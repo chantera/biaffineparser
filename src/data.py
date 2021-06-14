@@ -10,7 +10,7 @@ class Preprocessor:
 
     def __init__(self):
         self.vocabs = {}
-        self._pretrained_embeddings = None
+        self._embeddings = None
         self._embed_file = None
 
     def build_vocab(self, file, unknown="<UNK>", preprocess=str.lower, min_frequency=2):
@@ -35,8 +35,8 @@ class Preprocessor:
         self.vocabs["word"].preprocess = preprocess
         self.vocabs["postag"] = Vocab.fromkeys(postag_set, unknown)
         self.vocabs["rel"] = Vocab.fromkeys(rel_set)
-        if "pretrained" not in self.vocabs:
-            self.vocabs["pretrained"] = Vocab.fromkeys([], unknown)
+        if "pretrained_word" not in self.vocabs:
+            self.vocabs["pretrained_word"] = Vocab.fromkeys([], unknown)
 
     def load_embeddings(self, file, unknown="<UNK>", preprocess=str.lower):
         embeddings = load_embeddings(os.path.expanduser(file))
@@ -44,9 +44,9 @@ class Preprocessor:
         embeddings[preprocess("<ROOT>")] = [0.0] * dim
         if unknown not in embeddings:
             embeddings[unknown] = [0.0] * dim
-        self.vocabs["pretrained"] = Vocab.fromkeys(embeddings.keys(), unknown)
-        self.vocabs["pretrained"].preprocess = preprocess
-        self._pretrained_embeddings = list(embeddings.values())
+        self.vocabs["pretrained_word"] = Vocab.fromkeys(embeddings.keys(), unknown)
+        self.vocabs["pretrained_word"].preprocess = preprocess
+        self._embeddings = list(embeddings.values())
         self._embed_file = file
 
     def transform(self, tokens):
@@ -54,24 +54,24 @@ class Preprocessor:
             *[(token["form"], token["postag"], token["head"], token["deprel"]) for token in tokens]
         )
         word_ids = [self.vocabs["word"][s] for s in words]
-        pre_ids = [self.vocabs["pretrained"][s] for s in words]
+        pre_ids = [self.vocabs["pretrained_word"][s] for s in words]
         postag_ids = [self.vocabs["postag"][s] for s in postags]
         rel_ids = [self.vocabs["rel"][s] for s in rels]
-        return (word_ids, pre_ids, postag_ids, (heads, rel_ids))
+        return (word_ids, pre_ids, postag_ids, list(heads), rel_ids)
 
     def __getstate__(self):
         state = self.__dict__.copy()
         if not self.serialize_embeddings:
-            state["_pretrained_embeddings"] = None
+            state["_embeddings"] = None
         return state
 
     @property
-    def pretrained_embeddings(self):
-        if self._pretrained_embeddings is None and self._embed_file is not None:
-            v = self.vocabs["pretrained"]
+    def pretrained_word_embeddings(self):
+        if self._embeddings is None and self._embed_file is not None:
+            v = self.vocabs["pretrained_word"]
             self.load_embeddings(self._embed_file, v.lookup(v.unknown_id), v.preprocess)
-            assert len(self.vocabs["pretrained"]) == len(v)
-        return self._pretrained_embeddings
+            assert len(self.vocabs["pretrained_word"]) == len(v)
+        return self._embeddings
 
 
 class Loader:
@@ -101,8 +101,6 @@ def parse_conll(lines):
             "feats": "_",
             "head": 0,
             "deprel": "root",
-            "phead": "_",
-            "pdeprel": "_",
         }
         return token
 
@@ -126,8 +124,6 @@ def parse_conll(lines):
                 "feats": cols[5],
                 "head": int(cols[6]),
                 "deprel": cols[7],
-                "phead": cols[8],
-                "pdeprel": cols[9],
             }
             tokens.append(token)
     if len(tokens) > 1:
