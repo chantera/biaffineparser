@@ -1,4 +1,5 @@
-from typing import Iterable, Optional, Sequence, Tuple, Union
+import math
+from typing import Callable, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -13,8 +14,8 @@ class BiaffineParser(nn.Module):
         self,
         encoder: "Encoder",
         n_rels: Optional[int] = None,
-        arc_mlp_units: int = 500,
-        rel_mlp_units: int = 100,
+        arc_mlp_units: Union[Sequence[int], int] = 500,
+        rel_mlp_units: Union[Sequence[int], int] = 100,
         arc_mlp_dropout: float = 0.0,
         rel_mlp_dropout: float = 0.0,
     ):
@@ -46,27 +47,22 @@ class BiaffineParser(nn.Module):
         self.mlp_rel_dep = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
         self.biaf_arc = Biaffine(arc_mlp_units[-1], arc_mlp_units[-1], 1)
         self.biaf_rel = Biaffine(rel_mlp_units[-1], rel_mlp_units[-1], n_rels)
-        self._results = {}
+        self._cache = {}
 
-    def forward(self, words, pretrained_words, postags, *args):
-        self._results.clear()
-        # [n; B], [n; B], [n; B] => (B, n_max, d)
-        hs = self.encode(words, pretrained_words, postags)
+    def forward(self, *xs: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        self._cache.clear()
+        hs, lengths = self.encoder(*xs)  # => (b, n, d)
         hs_arc_h = self.mlp_arc_head(hs)
         hs_arc_d = self.mlp_arc_dep(hs)
         hs_rel_h = self.mlp_rel_head(hs)
         hs_rel_d = self.mlp_rel_dep(hs)
-        self._logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
-        self._mask = _mask_arc(self._logits_arc, self._lengths, mask_loop=not (self.training))
-        if self._mask is not None:
-            self._logits_arc.masked_fill_(self._mask.logical_not(), -1e8)
-        self._logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
-        # => (B, n_max, n_max), (B, n_max, n_max, n_rels)
-        return self._logits_arc, self._logits_rel
-
-    def encode(self, *args):
-        self._hs, self._lengths = self.encoder(*args[:3])
-        return self._hs
+        logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
+        mask = _mask_arc(lengths, mask_loop=not self.training)
+        if mask is not None:
+            logits_arc.masked_fill_(mask.logical_not().to(logits_arc.device), -1e8)
+        logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
+        self._cache.update(lengths=lengths, logits_arc=logits_arc, logits_rel=logits_rel)
+        return logits_arc, logits_rel  # (b, n, n), (b, n, n, n_rels)
 
     def parse(self, words, pretrained_words, postags, use_cache=True):
         if len(self._results) == 0 or not use_cache:
@@ -79,7 +75,7 @@ class BiaffineParser(nn.Module):
         return parsed
 
     def compute_loss(self, y, t):
-        self._results = _compute_metrics(y, t, self._lengths, False)
+        self._results = _compute_metrics(y, t, self._cache["lengths"], False)
         return self._results["arc_loss"] + self._results["rel_loss"]
 
     def compute_accuracy(self, y, t, use_cache=True):
@@ -98,19 +94,20 @@ class BiaffineParser(nn.Module):
         return arc_accuracy, rel_accuracy
 
 
-def _mask_arc(logits_arc, lengths, mask_loop=True):
-    if np.all(lengths == lengths[0]):
+@torch.no_grad()
+def _mask_arc(lengths: torch.Tensor, mask_loop: bool = True) -> Optional[torch.Tensor]:
+    b, n = lengths.numel(), lengths.max()
+    if torch.all(lengths == n):
         if not mask_loop:
             return None
-        mask = np.ones(logits_arc.shape, dtype=np.bool)
+        mask = torch.ones(b, n, n)
     else:
-        mask = np.zeros(logits_arc.shape, dtype=np.bool)
+        mask = torch.zeros(b, n, n)
         for i, length in enumerate(lengths):
             mask[i, :length, :length] = 1
     if mask_loop:
-        idx = np.arange(mask.shape[-1])
-        mask[:, idx, idx] = 0
-    return _from_numpy(mask, device=logits_arc.get_device())
+        mask.masked_fill_(torch.eye(n, dtype=torch.bool), 0)
+    return mask
 
 
 def _parse_by_graph(logits_arc, lengths, mask=None):
@@ -139,20 +136,12 @@ def _decode_rels(logits_rel, trees, lengths, root=0):
 
 def _compute_metrics(parsed, gold_batch, lengths, use_predicted_arcs_for_rels=True):
     logits_arc, logits_rel, *_ = parsed
-    true_arcs, true_rels, *_ = zip(*gold_batch)
+    true_arcs, true_rels, *_ = gold_batch
 
     # exclude attachment from the root
     logits_arc, logits_rel = logits_arc[:, 1:], logits_rel[:, 1:]
-    true_arcs = _from_numpy(
-        _np_pad_sequence(true_arcs, padding=-1)[:, 1:],
-        dtype=torch.int64,
-        device=logits_arc.get_device(),
-    )
-    true_rels = _from_numpy(
-        _np_pad_sequence(true_rels, padding=-1)[:, 1:],
-        dtype=torch.int64,
-        device=logits_rel.get_device(),
-    )
+    true_arcs = nn.utils.rnn.pad_sequence(true_arcs, batch_first=True, padding_value=-1)[:, 1:]
+    true_rels = nn.utils.rnn.pad_sequence(true_rels, batch_first=True, padding_value=-1)[:, 1:]
     lengths = lengths - 1
 
     b, n_deps, n_heads = logits_arc.shape
@@ -205,24 +194,8 @@ def _accuracy(y, t, ignore_index=None):
     return count.item(), total.item()
 
 
-def _np_pad_sequence(xs, padding=0):
-    length = max(len(x) for x in xs)
-    shape = (len(xs), length) + xs[0].shape[1:]
-    y = np.empty(shape, xs[0].dtype)
-    if length == 0:
-        return y
-    for i, x in enumerate(xs):
-        n = len(x)
-        if n == length:
-            y[i] = x
-        else:
-            y[i, 0:n] = x
-            y[i, n:] = padding
-    return y
-
-
 class Encoder(nn.Module):
-    def forward(self, *xs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, *input_ids: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns the encoded sequences and their lengths."""
         raise NotImplementedError
 
@@ -234,7 +207,7 @@ class BiLSTMEncoder(Encoder):
         reduce_embeddings: Optional[Sequence[int]] = None,
         n_lstm_layers: int = 3,
         lstm_hidden_size: Optional[int] = None,
-        embeddings_dropout: float = 0.0,
+        embedding_dropout: float = 0.0,
         lstm_dropout: float = 0.0,
         recurrent_dropout: float = 0.0,
     ):
@@ -247,11 +220,11 @@ class BiLSTMEncoder(Encoder):
             else:
                 emb = nn.Embedding.from_pretrained(item, freeze=True)
             self.embeds.append(emb)
-        self._reduce_embs = reduce_embeddings or []
+        self._reduce_embs = sorted(reduce_embeddings or [])
 
         embed_dims = [emb.weight.size(1) for emb in self.embeds]
         lstm_in_size = sum(embed_dims)
-        if self._reduce_embs:
+        if len(self._reduce_embs) > 1:
             lstm_in_size -= embed_dims[self._reduce_embs[0]] * (len(self._reduce_embs) - 1)
         if lstm_hidden_size is None:
             lstm_hidden_size = lstm_in_size
@@ -264,84 +237,52 @@ class BiLSTMEncoder(Encoder):
             dropout=lstm_dropout,
             recurrent_dropout=recurrent_dropout,
         )
-        self.embeddings_dropout = SequenceDropout(embeddings_dropout)
+        self.embedding_dropout = EmbeddingDropout(embedding_dropout)
         self.lstm_dropout = nn.Dropout(lstm_dropout)
         self._hidden_size = lstm_hidden_size
 
-    def forward(self, *xs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError  # TODO: implement
-        # [(n, d_word); B], [(n, d_word); B], [(n, d_pos); B]
-        lengths = np.array([x.size for x in xs[0]], dtype=np.int32)
-        xs_flatten = (np.concatenate(xs_each, axis=0) for xs_each in xs)
-        rs = [
-            emb(_from_numpy(xs_each, torch.int64, emb.weight.get_device()))
-            for emb, xs_each in zip(self.embeds, xs_flatten)
-        ]
-        rs = self.lstm_dropout(self._concat_embeds(rs))
-        # => [(n, d_word + d_pos); B]
-        if np.all(lengths == lengths[0]):
-            hs, _ = self.bilstm(rs.view(len(lengths), lengths[0], -1))
-        else:
-            rs = torch.split(rs, tuple(lengths), dim=0)
-            rs = nn.utils.rnn.pack_sequence(rs, enforce_sorted=False)
-            hs, _ = self.bilstm(rs)
-            hs, _ = nn.utils.rnn.pad_packed_sequence(hs, batch_first=True)
-        hs = self.lstm_dropout(hs)
-        return hs, lengths
+    def forward(self, *input_ids: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        lengths = torch.tensor([x.size(0) for x in input_ids[0]])
+        xs = [emb(torch.cat(ids_each, dim=0)) for emb, ids_each in zip(self.embeds, input_ids)]
+        if len(self._reduce_embs) > 1:
+            xs += [torch.sum(torch.stack([xs.pop(i) for i in reversed(self._reduce_embs)]), dim=0)]
+        seq = self.lstm_dropout(self.embedding_dropout(torch.stack(xs, dim=1)))  # (B * n, emb, d)
 
-    def _concat_embeds(self, embed_outputs):
-        rs_postags = embed_outputs.pop() if self._use_postag else None
-        rs_words_pretrained = embed_outputs.pop() if self._use_pretrained_word else None
-        rs_words = embed_outputs.pop()
-        if rs_words_pretrained is not None:
-            rs_words += rs_words_pretrained
-        rs = [rs_words]
-        if rs_postags is not None:
-            rs.append(rs_postags)
-        rs = self.embeddings_dropout(rs)
-        rs = torch.cat(rs, dim=1) if len(rs) > 1 else rs[0]
-        return rs
+        if torch.all(lengths == lengths[0]):
+            hs, _ = self.bilstm(seq.view(len(lengths), lengths[0], -1))
+        else:
+            seq = torch.split(seq.view(seq.size(0), -1), tuple(lengths), dim=0)
+            seq = nn.utils.rnn.pack_sequence(seq, enforce_sorted=False)
+            hs, _ = self.bilstm(seq)
+            hs, _ = nn.utils.rnn.pad_packed_sequence(hs, batch_first=True)
+        return self.lstm_dropout(hs), lengths
 
     @property
-    def out_size(self):
+    def out_size(self) -> int:
         return self._hidden_size * 2
 
 
-def _from_numpy(x, dtype=None, device=None):
-    return torch.from_numpy(x).to(dtype=dtype, device=device)
-
-
-class SequenceDropout(nn.Module):
-    def __init__(self, p=0.5):
+class EmbeddingDropout(nn.Module):
+    def __init__(self, p: float = 0.5):
         super().__init__()
         if p < 0 or p > 1:
-            raise ValueError(
-                "dropout probability has to be between 0 and 1, " "but got {}".format(p)
-            )
+            raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
         self.p = p
 
-    def forward(self, xs):
-        return _embed_dropout(xs, self.p, self.training)
+    def forward(self, xs: torch.Tensor) -> torch.Tensor:
+        """Drop embeddings with scaling.
+        https://github.com/tdozat/Parser-v2/blob/304c638aa780a5591648ef27060cfa7e4bee2bd0/parser/neural/models/nn.py#L50  # NOQA
+        """
+        if not self.training or self.p == 0.0:
+            return xs
+        with torch.no_grad():
+            mask = torch.rand(xs.size()[:-1], device=xs.device) >= self.p  # (..., n_channels)
+            scale = mask.size(-1) / torch.clamp(mask.sum(dim=-1, keepdims=True), min=1.0)
+            mask = (mask * scale)[..., None]
+        return xs * mask
 
-    def extra_repr(self):
-        return "p={}".format(self.p)
-
-
-def _embed_dropout(xs, p=0.5, training=True):
-    """
-    Drop representations with scaling.
-    https://github.com/tdozat/Parser-v2/blob/304c638aa780a5591648ef27060cfa7e4bee2bd0/parser/neural/models/nn.py#L50  # NOQA
-    """
-    if not training or p == 0.0:
-        return xs
-    masks = (np.random.rand(len(xs), xs[0].size(0)) >= p).astype(np.float32)
-    scale = len(masks) / np.maximum(np.sum(masks, axis=0, keepdims=True), 1)
-    masks = np.expand_dims(masks * scale, axis=2)
-    ys = [
-        xs_each * _from_numpy(mask, device=xs_each.get_device())
-        for xs_each, mask in zip(xs, masks)
-    ]
-    return ys
+    def extra_repr(self) -> str:
+        return f"p={self.p}"
 
 
 class LSTM(nn.LSTM):
@@ -369,12 +310,20 @@ class LSTM(nn.LSTM):
 
 
 class MLP(nn.Sequential):
-    def __init__(self, layers):
-        assert all(isinstance(layer, MLP.Layer) for layer in layers)
+    def __init__(self, layers: Iterable["MLP.Layer"]):
+        if not all(isinstance(layer, MLP.Layer) for layer in layers):
+            raise TypeError("each layer must be an instance of MLP.Layer")
         super().__init__(*layers)
 
     class Layer(nn.Module):
-        def __init__(self, in_size, out_size=None, activation=None, dropout=0.0, bias=True):
+        def __init__(
+            self,
+            in_size: int,
+            out_size: Optional[int] = None,
+            activation: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+            dropout: float = 0.0,
+            bias: bool = True,
+        ):
             super().__init__()
             if activation is not None and not callable(activation):
                 raise TypeError("activation must be callable: type={}".format(type(activation)))
@@ -382,7 +331,7 @@ class MLP(nn.Sequential):
             self.activate = activation
             self.dropout = nn.Dropout(dropout)
 
-        def forward(self, x):
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
             h = self.linear(x)
             if self.activate is not None:
                 h = self.activate(h)
@@ -390,13 +339,13 @@ class MLP(nn.Sequential):
 
 
 class Biaffine(nn.Module):
-    def __init__(self, in1_features, in2_features, out_features):
+    def __init__(self, in1_features: int, in2_features: int, out_features: int):
         super().__init__()
         self.bilinear = PairwiseBilinear(in1_features + 1, in2_features + 1, out_features)
         self.bilinear.weight.data.zero_()
         self.bilinear.bias.data.zero_()
 
-    def forward(self, input1, input2):
+    def forward(self, input1: torch.Tensor, input2: torch.Tensor) -> torch.Tensor:
         input1 = torch.cat([input1, input1.new_ones(*input1.size()[:-1], 1)], dim=input1.dim() - 1)
         input2 = torch.cat([input2, input2.new_ones(*input2.size()[:-1], 1)], dim=input2.dim() - 1)
         return self.bilinear(input1, input2)
@@ -407,7 +356,7 @@ class PairwiseBilinear(nn.Module):
     https://github.com/stanfordnlp/stanza/blob/v1.1.1/stanza/models/common/biaffine.py#L5  # NOQA
     """
 
-    def __init__(self, in1_features, in2_features, out_features, bias=True):
+    def __init__(self, in1_features: int, in2_features: int, out_features: int, bias: bool = True):
         super().__init__()
         self.in1_features = in1_features
         self.in2_features = in2_features
@@ -420,23 +369,22 @@ class PairwiseBilinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        bound = 1 / np.sqrt(self.weight.size(0))
+        bound = 1 / math.sqrt(self.weight.size(0))
         nn.init.uniform_(self.weight, -bound, bound)
         if self.bias is not None:
             nn.init.uniform_(self.bias, -bound, bound)
 
-    def forward(self, input1, input2):
+    def forward(self, input1: torch.Tensor, input2: torch.Tensor) -> torch.Tensor:
         d1, d2, out = self.in1_features, self.in2_features, self.out_features
         n1, n2 = input1.size(1), input2.size(1)
-        # (B * n1, d1) @ (d1, O * d2) => (B * n1, O * d2)
+        # (b * n1, d1) @ (d1, out * d2) => (b * n1, out * d2)
         x1W = torch.mm(input1.view(-1, d1), self.weight.view(d1, out * d2))
-        # (B, n1 * O, d2) @ (B, d2, n2) => (B, n1 * O, n2)
+        # (b, n1 * out, d2) @ (b, d2, n2) => (b, n1 * out, n2)
         x1Wx2 = x1W.view(-1, n1 * out, d2).bmm(input2.transpose(1, 2))
-        # => (B, n1, n2, O)
         y = x1Wx2.view(-1, n1, self.out_features, n2).transpose(2, 3)
         if self.bias is not None:
             y.add_(self.bias)
-        return y
+        return y  # (b, n1, n2, out)
 
     def extra_repr(self) -> str:
         return "in1_features={}, in2_features={}, out_features={}, bias={}".format(

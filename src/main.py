@@ -88,7 +88,7 @@ def build_model(**kwargs):
         reduce_embeddings=[0, 1],
         n_lstm_layers=kwargs.get("n_lstm_layers", 3),
         lstm_hidden_size=kwargs.get("lstm_hidden_size", 400),
-        embeddings_dropout=kwargs.get("embeddings_dropout", dropout_ratio),
+        embedding_dropout=kwargs.get("embedding_dropout", dropout_ratio),
         lstm_dropout=kwargs.get("lstm_dropout", dropout_ratio),
         recurrent_dropout=kwargs.get("recurrent_dropout", dropout_ratio),
     )
