@@ -106,14 +106,8 @@ def build_model(**kwargs):
 def step(model, batch):
     *xs, heads, rels = batch
     logits_arc, logits_rel = model(*xs)
-    loss = model.compute_loss((logits_arc, logits_rel), (heads, rels))
-    arc_accuracy, rel_accuracy = model.compute_accuracy((logits_arc, logits_rel), (heads, rels))
-    output = {
-        "loss": loss,
-        "arc_accuracy": arc_accuracy,
-        "rel_accuracy": rel_accuracy,
-    }
-    return output
+    result = model.compute_metrics(logits_arc, logits_rel, heads, rels)
+    return result
 
 
 def test(model_file, test_file, cuda=False):

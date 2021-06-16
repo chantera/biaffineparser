@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Iterable, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -47,51 +47,43 @@ class BiaffineParser(nn.Module):
         self.mlp_rel_dep = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
         self.biaf_arc = Biaffine(arc_mlp_units[-1], arc_mlp_units[-1], 1)
         self.biaf_rel = Biaffine(rel_mlp_units[-1], rel_mlp_units[-1], n_rels)
-        self._cache = {}
 
     def forward(self, *xs: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        self._cache.clear()
-        hs, lengths = self.encoder(*xs)  # => (b, n, d)
+        hs, self._lengths = self.encoder(*xs)  # => (b, n, d)
         hs_arc_h = self.mlp_arc_head(hs)
         hs_arc_d = self.mlp_arc_dep(hs)
         hs_rel_h = self.mlp_rel_head(hs)
         hs_rel_d = self.mlp_rel_dep(hs)
         logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
-        mask = _mask_arc(lengths, mask_loop=not self.training)
+        mask = _mask_arc(self._lengths, mask_loop=not self.training)
         if mask is not None:
-            logits_arc.masked_fill_(mask.logical_not().to(logits_arc.device), -1e8)
+            logits_arc.masked_fill_(mask.logical_not().to(logits_arc.device), -float("inf"))
         logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
-        self._cache.update(lengths=lengths, logits_arc=logits_arc, logits_rel=logits_rel)
         return logits_arc, logits_rel  # (b, n, n), (b, n, n, n_rels)
 
-    def parse(self, words, pretrained_words, postags, use_cache=True):
-        if len(self._results) == 0 or not use_cache:
-            self.forward(words, pretrained_words, postags)
-        arcs = _parse_by_graph(self._logits_arc, self._lengths, self._mask)
-        rels = _decode_rels(self._logits_rel, arcs, self._lengths)
+    @torch.no_grad()
+    def parse(self, *xs):
+        logits_arc, logits_rel = self.forward(*xs)
+        arcs = _parse_by_graph(logits_arc, self._lengths)
+        rels = _decode_rels(logits_rel, arcs, self._lengths)
         arcs = [arcs_i[:n] for arcs_i, n in zip(arcs, self._lengths)]
         rels = [rels_i[:n] for rels_i, n in zip(rels, self._lengths)]
         parsed = list(zip(arcs, rels))
         return parsed
 
-    def compute_loss(self, y, t):
-        self._results = _compute_metrics(y, t, self._cache["lengths"], False)
-        return self._results["arc_loss"] + self._results["rel_loss"]
-
-    def compute_accuracy(self, y, t, use_cache=True):
-        arc_accuracy = self._results.get("arc_accuracy", None)
-        rel_accuracy = self._results.get("rel_accuracy", None)
-        if not use_cache or (arc_accuracy is None and rel_accuracy is None):
-            results = _compute_metrics(y, t, self._lengths, False)
-            arc_accuracy = results.get("arc_accuracy", None)
-            rel_accuracy = results.get("rel_accuracy", None)
-            self._results.update(
-                {
-                    "arc_accuracy": arc_accuracy,
-                    "rel_accuracy": rel_accuracy,
-                }
-            )
-        return arc_accuracy, rel_accuracy
+    def compute_metrics(
+        self,
+        logits_arc: torch.Tensor,
+        logits_rel: Optional[torch.Tensor],
+        true_arcs: Sequence[torch.Tensor],
+        true_rels: Optional[Sequence[torch.Tensor]],
+    ) -> Dict[str, Any]:
+        true_arcs = nn.utils.rnn.pad_sequence(true_arcs, batch_first=True, padding_value=-1)
+        if true_rels is not None:
+            true_rels = nn.utils.rnn.pad_sequence(true_rels, batch_first=True, padding_value=-1)
+        result = _compute_metrics(logits_arc, true_arcs, logits_rel, true_rels, ignore_index=-1)
+        result["loss"] = result["arc_loss"] + (result["rel_loss"] or 0.0)
+        return result
 
 
 @torch.no_grad()
@@ -110,17 +102,18 @@ def _mask_arc(lengths: torch.Tensor, mask_loop: bool = True) -> Optional[torch.T
     return mask
 
 
+@torch.no_grad()
 def _parse_by_graph(logits_arc, lengths, mask=None):
-    probs = F.softmax(logits_arc, dim=2).detach()
-    if mask is not None:
-        probs.mul_(mask)
-    probs = probs.cpu().numpy()
+    mask = mask or _mask_arc(lengths, mask_loop=True)
+    probs = F.softmax(logits_arc, dim=2) * mask
+    probs = probs.detach().cpu().numpy()
     trees = np.full((len(lengths), max(lengths)), -1, dtype=np.int32)
     for i, (probs_i, length) in enumerate(zip(probs, lengths)):
         trees[i, 1:length] = mst.mst(probs_i[:length, :length])[0][1:]
     return trees
 
 
+@torch.no_grad()
 def _decode_rels(logits_rel, trees, lengths, root=0):
     steps = np.arange(trees.shape[1])
     logits_rel = [logits_rel[i, steps, arcs] for i, arcs in enumerate(trees)]
@@ -134,58 +127,58 @@ def _decode_rels(logits_rel, trees, lengths, root=0):
     return rels
 
 
-def _compute_metrics(parsed, gold_batch, lengths, use_predicted_arcs_for_rels=True):
-    logits_arc, logits_rel, *_ = parsed
-    true_arcs, true_rels, *_ = gold_batch
+def _compute_metrics(
+    logits_arc: torch.Tensor,
+    true_arcs: torch.Tensor,
+    logits_rel: Optional[torch.Tensor] = None,
+    true_rels: Optional[torch.Tensor] = None,
+    ignore_index: Optional[int] = -1,
+    use_predicted_arcs_for_rels: bool = False,
+) -> Dict[str, Any]:
+    result = dict.fromkeys(["arc_loss", "arc_accuracy", "rel_loss", "rel_accuracy"])
 
-    # exclude attachment from the root
-    logits_arc, logits_rel = logits_arc[:, 1:], logits_rel[:, 1:]
-    true_arcs = nn.utils.rnn.pad_sequence(true_arcs, batch_first=True, padding_value=-1)[:, 1:]
-    true_rels = nn.utils.rnn.pad_sequence(true_rels, batch_first=True, padding_value=-1)[:, 1:]
-    lengths = lengths - 1
+    def metrics(y, t, ignore_index):
+        loss = F.cross_entropy(y, t, ignore_index=ignore_index, reduction="sum")
+        loss.div_((t != -1).sum())
+        accuracy = categorical_accuracy(y, t, ignore_index)
+        return loss, accuracy
 
-    b, n_deps, n_heads = logits_arc.shape
-    logits_arc_flatten = logits_arc.contiguous().view(b * n_deps, n_heads)
-    true_arcs_flatten = true_arcs.contiguous().view(b * n_deps)
-    arc_loss = F.cross_entropy(
-        logits_arc_flatten, true_arcs_flatten, ignore_index=-1, reduction="sum"
-    )
-    arc_loss.div_(lengths.sum())
-    arc_accuracy = _accuracy(logits_arc_flatten, true_arcs_flatten, ignore_index=-1)
+    logits_arc, true_arcs = logits_arc[:, 1:], true_arcs[:, 1:]  # exclude attachment for the root
+    logits_arc_flatten = logits_arc.contiguous().view(-1, logits_arc.size(-1))
+    true_arcs_flatten = true_arcs.contiguous().view(-1)
+    arc_loss, arc_accuracy = metrics(logits_arc_flatten, true_arcs_flatten, ignore_index)
+    result.update(arc_loss=arc_loss, arc_accuracy=arc_accuracy)
+
+    if logits_rel is None:
+        return result
+    elif true_rels is None:
+        raise ValueError("'true_rels' must be given to compute loss for rels")
 
     if use_predicted_arcs_for_rels:
-        parsed_arcs = logits_arc.argmax(dim=2)
+        arcs = logits_arc.argmax(dim=2)
     else:
-        parsed_arcs = true_arcs.masked_fill(true_arcs == -1, 0)
-    b, n_deps, n_heads, n_rels = logits_rel.shape
-    logits_rel = logits_rel.gather(
-        dim=2, index=parsed_arcs.view(*parsed_arcs.size(), 1, 1).expand(-1, -1, -1, n_rels)
-    )
-    logits_rel_flatten = logits_rel.contiguous().view(b * n_deps, n_rels)
-    true_rels_flatten = true_rels.contiguous().view(b * n_deps)
-    rel_loss = F.cross_entropy(
-        logits_rel_flatten, true_rels_flatten, ignore_index=-1, reduction="sum"
-    )
-    rel_loss.div_(lengths.sum())
-    rel_accuracy = _accuracy(logits_rel_flatten, true_rels_flatten, ignore_index=-1)
+        arcs = true_arcs.masked_fill(true_arcs == -1, 0)
 
-    return {
-        "arc_loss": arc_loss,
-        "arc_accuracy": arc_accuracy,
-        "rel_loss": rel_loss,
-        "rel_accuracy": rel_accuracy,
-    }
+    logits_rel, true_rels = logits_rel[:, 1:], true_rels[:, 1:]  # exclude attachment for the root
+    gather_index = arcs.view(*arcs.size(), 1, 1).expand(-1, -1, -1, logits_rel.size(-1))
+    logits_rel = torch.gather(logits_rel, dim=2, index=gather_index)
+    logits_rel_flatten = logits_rel.contiguous().view(-1, logits_rel.size(-1))
+    true_rels_flatten = true_rels.contiguous().view(-1)
+    rel_loss, rel_accuracy = metrics(logits_rel_flatten, true_rels_flatten, ignore_index)
+    result.update(rel_loss=rel_loss, rel_accuracy=rel_accuracy)
+
+    return result
 
 
-def _accuracy(y, t, ignore_index=None):
+@torch.no_grad()
+def categorical_accuracy(
+    y: torch.Tensor, t: torch.Tensor, ignore_index: Optional[int] = None
+) -> Tuple[int, int]:
     pred = y.argmax(dim=1)
     if ignore_index is not None:
         mask = t == ignore_index
         ignore_cnt = mask.sum()
-        ignore = torch.tensor([ignore_index], dtype=torch.int64)
-        if pred.is_cuda:
-            ignore = ignore.cuda()
-        pred = torch.where(mask, ignore, pred)
+        pred.masked_fill_(mask, ignore_index)
         count = (pred == t).sum() - ignore_cnt
         total = t.numel() - ignore_cnt
     else:
