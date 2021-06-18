@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import partial
 from tempfile import NamedTemporaryFile
 
@@ -25,8 +26,6 @@ def train(
     cuda=False,
     save_dir=None,
     seed=None,
-    cache_dir=None,
-    refresh_cache=False,
 ):
     if seed is not None:
         utils.seed_everything(seed)
@@ -55,28 +54,55 @@ def train(
     )
     model = build_model(**model_config)
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr, betas=(0.9, 0.9), eps=1e-12)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 0.75 ** (epoch / 5000))
 
-    trainer = utils.training.Trainer(model, (optimizer, scheduler), step, epoch=epochs)
-    trainer.add_callback(
-        ProgressCallback(),
-        utils.training.PrintCallback(printer=logger.info),
-    )
+    trainer = create_trainer(model, step=forward, lr=lr, epoch=epochs)
     if eval_dataloader:
         rel_map = {v: k for k, v in preprocessor.vocabs["rel"].mapping.items()}
         trainer.add_callback(EvaluateCallback(eval_file, rel_map), priority=0)
-
-    trainer.add_metric("arc_loss", "arc_accuracy")
+        if save_dir:
+            torch.save(preprocessor, os.path.join(save_dir, "preprocessor.pt"))
+            trainer.add_callback(
+                utils.training.SaveCallback(save_dir, monitor="eval/UAS", mode="max")
+            )
     with logging_redirect_tqdm(loggers=[logger]):
         trainer.fit(train_dataloader, eval_dataloader)
+
+
+def evaluate(
+    eval_file, checkpoint_file, preprocessor_file, batch_size=5000, cuda=False, verbose=False
+):
+    device = torch.device("cuda" if cuda else "cpu")
+
+    preprocessor = torch.load(preprocessor_file)
+    loader_config = dict(
+        batch_size=batch_size,
+        map_fn=preprocessor.transform,
+        collate_fn=partial(collate, device=device),
+    )
+    eval_dataloader = create_dataloader(read_conll(eval_file), **loader_config, shuffle=False)
+
+    checkpoint = torch.load(checkpoint_file)
+    model_config = dict(
+        word_vocab_size=len(preprocessor.vocabs["word"]),
+        pretrained_word_vocab_size=len(preprocessor.vocabs["word"]),
+        postag_vocab_size=len(preprocessor.vocabs["postag"]),
+        n_rels=len(preprocessor.vocabs["rel"]),
+    )
+    model = build_model(**model_config)
+    model.load_state_dict(checkpoint["model"])
+    model.to(device)
+
+    trainer = create_trainer(model, step=forward)
+    rel_map = {v: k for k, v in preprocessor.vocabs["rel"].mapping.items()}
+    trainer.add_callback(EvaluateCallback(eval_file, rel_map, verbose), priority=0)
+    with logging_redirect_tqdm(loggers=[logger]):
+        trainer.evaluate(eval_dataloader)
 
 
 def create_dataloader(examples, map_fn=None, **kwargs):
     if map_fn:
         examples = map(map_fn, examples)
     dataset = ListDataset(examples)
-    print(len(dataset))
     loader = torch.utils.data.DataLoader(dataset, **kwargs)
     return loader
 
@@ -117,7 +143,22 @@ def build_model(**kwargs):
     return model
 
 
-def step(model, batch):
+def create_trainer(model, **kwargs):
+    optimizer = torch.optim.Adam(
+        model.parameters(), kwargs.pop("lr", 0.001), betas=(0.9, 0.9), eps=1e-12
+    )
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 0.75 ** (epoch / 5000))
+    kwargs.setdefault("max_grad_norm", 5.0)
+    trainer = utils.training.Trainer(model, (optimizer, scheduler), **kwargs)
+    trainer.add_callback(
+        ProgressCallback(),
+        utils.training.PrintCallback(printer=logger.info),
+    )
+    trainer.add_metric("arc_loss", "arc_accuracy", "rel_loss", "rel_accuracy")
+    return trainer
+
+
+def forward(model, batch):
     *xs, heads, rels = batch
     logits_arc, logits_rel, lengths = model(*xs)
     result = model.compute_metrics(logits_arc, logits_rel, heads, rels)
@@ -147,6 +188,7 @@ class EvaluateCallback(utils.training.Callback):
         self.gold_file = gold_file
         self.rel_map = rel_map
         self.verbose = verbose
+        self.result = {}
         self._outputs = []
 
     def on_step_end(self, context, output):
@@ -168,9 +210,14 @@ class EvaluateCallback(utils.training.Callback):
             return
         with NamedTemporaryFile(mode="w") as f:
             utils.conll.dump_conll(self._yield_prediction(), f)
-            result = utils.conll.evaluate(self.gold_file, f.name, self.verbose)
-        metrics.update({"eval/UAS": result["UAS"], "eval/LAS": result["LAS"]})
+            self.result.update(utils.conll.evaluate(self.gold_file, f.name, self.verbose))
+        metrics.update({"eval/UAS": self.result["UAS"], "eval/LAS": self.result["LAS"]})
         self._outputs.clear()
+
+    def on_evaluate_end(self, context, metrics):
+        metrics.update({"eval/UAS": self.result["UAS"], "eval/LAS": self.result["LAS"]})
+        if self.verbose:
+            logger.info(self.result["raw"])
 
     def _yield_prediction(self):
         for tokens, (arcs, rels) in zip(read_conll(self.gold_file), self._outputs):
@@ -179,36 +226,6 @@ class EvaluateCallback(utils.training.Callback):
             for token, head, rel in zip(tokens, arcs, rels):
                 token.update(head=head, deprel=rel)
             yield tokens
-
-
-def test(model_file, test_file, cuda=False):
-    raise NotImplementedError
-    """
-    context = utils.Saver.load_context(model_file)
-    if context.seed is not None:
-        utils.set_random_seed(context.seed, device)
-
-    test_dataset = context.loader.load(test_file, train=False, bucketing=True)
-    kwargs = dict(context)
-    if context.model_config is not None:
-        kwargs.update(context.model_config)
-    model = _build_parser(**dict(kwargs))
-    model.load_state_dict(torch.load(model_file))
-    if device >= 0:
-        torch.cuda.set_device(device)
-        model.cuda()
-
-    pbar = training.listeners.ProgressBar(lambda n: tqdm(total=n))
-    pbar.init(len(test_dataset))
-    evaluator = Evaluator(model, context.loader.rel_map, test_file, logging.getLogger())
-    model.eval()
-    for batch in test_dataset.batch(context.batch_size, colwise=True, shuffle=False):
-        xs, ts = batch[:-1], batch[-1]
-        ys = model.forward(*xs)
-        evaluator.on_batch_end({"train": False, "xs": xs, "ys": ys, "ts": ts})
-        pbar.update(len(ts))
-    evaluator.on_epoch_validate_end({})
-    """
 
 
 if __name__ == "__main__":
@@ -226,14 +243,17 @@ if __name__ == "__main__":
     subparser.add_argument("--lr", type=float, default=2e-3, metavar="VALUE")
     subparser.add_argument("--cuda", action="store_true")
     subparser.add_argument("--save_dir", type=str, default=None, metavar="DIR")
-    subparser.add_argument("--seed", type=int, default=None, metavar="VALUE", help="Random seed")
-    subparser.add_argument("--cache_dir", type=str, default=None, metavar="DIR")
-    subparser.add_argument("--refresh", "-r", action="store_true")
+    subparser.add_argument("--seed", type=int, default=None, metavar="VALUE")
 
-    subparser = subparsers.add_parser("test")
-    subparser.add_argument("--model_file", type=str, required=True, metavar="FILE")
-    subparser.add_argument("--test_file", type=str, required=True, metavar="FILE")
+    subparser = subparsers.add_parser("evaluate")
+    subparser.add_argument("--eval_file", type=str, required=True, metavar="FILE")
+    subparser.add_argument("--checkpoint_file", "--ckpt", type=str, required=True, metavar="FILE")
+    subparser.add_argument(
+        "--preprocessor_file", "--proc", type=str, required=True, metavar="FILE"
+    )
+    subparser.add_argument("--batch_size", type=int, default=5000, metavar="NUM")
     subparser.add_argument("--cuda", action="store_true")
+    subparser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args()
     if args.command == "train":
@@ -247,10 +267,15 @@ if __name__ == "__main__":
             args.cuda,
             args.save_dir,
             args.seed,
-            args.cache_dir,
-            args.refresh,
         )
-    if args.command == "test":
-        test(args.model_file, args.test_file, args.cuda)
+    if args.command == "evaluate":
+        evaluate(
+            args.eval_file,
+            args.checkpoint_file,
+            args.preprocessor_file,
+            args.batch_size,
+            args.cuda,
+            args.verbose,
+        )
     else:
         parser.print_help()

@@ -126,8 +126,13 @@ class SaveCallback(Callback):
                 return
 
         trainer = context.trainer
+        # TODO: add other configuration
         checkpoint = {
             "model": trainer.model.state_dict(),
+            "optimizer": trainer.optimizer.state_dict(),
+            "scheduler": trainer.scheduler.state_dict() if trainer.scheduler else None,
+            "trainer_config": trainer.config,
+            "trainer_state": trainer._state,
         }
         file = os.path.join(self.output_dir, f"{self.prefix}step-{context.global_step}.ckpt")
         torch.save(checkpoint, file)
