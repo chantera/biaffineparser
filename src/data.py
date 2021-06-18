@@ -1,7 +1,6 @@
-import itertools
-import os
 from collections import Counter
 
+from utils.conll import read_conll
 from utils.data import Vocab, load_embeddings
 
 
@@ -39,7 +38,7 @@ class Preprocessor:
             self.vocabs["pretrained_word"] = Vocab.fromkeys([], unknown)
 
     def load_embeddings(self, file, unknown="<UNK>", preprocess=str.lower):
-        embeddings = load_embeddings(os.path.expanduser(file))
+        embeddings = load_embeddings(file)
         dim = len(next(iter(embeddings.values())))
         embeddings[preprocess("<ROOT>")] = [0.0] * dim
         if unknown not in embeddings:
@@ -72,59 +71,3 @@ class Preprocessor:
             self.load_embeddings(self._embed_file, v.lookup(v.unknown_id), v.preprocess)
             assert len(self.vocabs["pretrained_word"]) == len(v)
         return self._embeddings
-
-
-class Loader:
-    def __init__(self, cache_dir=None):
-        self.preprocessor = Preprocessor()
-
-    def load(self, file, limit=None):
-        examples = read_conll(file)
-        if limit:
-            itertools.islice(examples, limit)
-        return list(map(self.preprocessor.transform, examples))
-
-
-def read_conll(file):
-    with open(os.path.expanduser(file)) as f:
-        yield from parse_conll(f)
-
-
-def parse_conll(lines):
-    def _create_root():
-        token = {
-            "id": 0,
-            "form": "<ROOT>",
-            "lemma": "<ROOT>",
-            "cpostag": "ROOT",
-            "postag": "ROOT",
-            "feats": "_",
-            "head": 0,
-            "deprel": "root",
-        }
-        return token
-
-    tokens = [_create_root()]
-    for line in lines:
-        line = line.strip()
-        if not line:
-            if len(tokens) > 1:
-                yield tokens
-                tokens = [_create_root()]
-        elif line.startswith("#"):
-            continue
-        else:
-            cols = line.split("\t")
-            token = {
-                "id": int(cols[0]),
-                "form": cols[1],
-                "lemma": cols[2],
-                "cpostag": cols[3],
-                "postag": cols[4],
-                "feats": cols[5],
-                "head": int(cols[6]),
-                "deprel": cols[7],
-            }
-            tokens.append(token)
-    if len(tokens) > 1:
-        yield tokens

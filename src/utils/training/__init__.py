@@ -1,2 +1,2 @@
-from utils.training import callbacks  # NOQA
-from utils.training.trainer import Callback, Trainer  # NOQA
+from utils.training.callbacks import *  # noqa
+from utils.training.trainer import Callback, Trainer  # noqa

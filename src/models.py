@@ -1,12 +1,11 @@
 import math
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common import mst
+from utils import mst
 
 
 class BiaffineParser(nn.Module):
@@ -48,28 +47,36 @@ class BiaffineParser(nn.Module):
         self.biaf_arc = Biaffine(arc_mlp_units[-1], arc_mlp_units[-1], 1)
         self.biaf_rel = Biaffine(rel_mlp_units[-1], rel_mlp_units[-1], n_rels)
 
-    def forward(self, *xs: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        hs, self._lengths = self.encoder(*xs)  # => (b, n, d)
+    def forward(
+        self, *input_ids: Sequence[torch.Tensor]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        hs, lengths = self.encoder(*input_ids)  # => (b, n, d)
         hs_arc_h = self.mlp_arc_head(hs)
         hs_arc_d = self.mlp_arc_dep(hs)
         hs_rel_h = self.mlp_rel_head(hs)
         hs_rel_d = self.mlp_rel_dep(hs)
         logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
-        mask = _mask_arc(self._lengths, mask_loop=not self.training)
+        mask = _mask_arc(lengths, mask_loop=not self.training)
         if mask is not None:
             logits_arc.masked_fill_(mask.logical_not().to(logits_arc.device), -float("inf"))
         logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
-        return logits_arc, logits_rel  # (b, n, n), (b, n, n, n_rels)
+        return logits_arc, logits_rel, lengths  # (b, n, n), (b, n, n, n_rels), (b,)
+
+    def parse(
+        self, *input_ids: Sequence[torch.Tensor]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        return self.decode(self.forward(input_ids))
 
     @torch.no_grad()
-    def parse(self, *xs):
-        logits_arc, logits_rel = self.forward(*xs)
-        arcs = _parse_by_graph(logits_arc, self._lengths)
-        rels = _decode_rels(logits_rel, arcs, self._lengths)
-        arcs = [arcs_i[:n] for arcs_i, n in zip(arcs, self._lengths)]
-        rels = [rels_i[:n] for rels_i, n in zip(rels, self._lengths)]
-        parsed = list(zip(arcs, rels))
-        return parsed
+    def decode(
+        self,
+        logits_arc: torch.Tensor,
+        logits_rel: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        arcs = _parse_graph(logits_arc, lengths)
+        rels = _decode_rels(logits_rel, arcs)
+        return arcs, rels
 
     def compute_metrics(
         self,
@@ -103,27 +110,25 @@ def _mask_arc(lengths: torch.Tensor, mask_loop: bool = True) -> Optional[torch.T
 
 
 @torch.no_grad()
-def _parse_by_graph(logits_arc, lengths, mask=None):
+def _parse_graph(
+    logits_arc: torch.Tensor, lengths: torch.Tensor, mask: Optional[torch.Tensor] = None
+) -> torch.Tensor:
     mask = mask or _mask_arc(lengths, mask_loop=True)
-    probs = F.softmax(logits_arc, dim=2) * mask
-    probs = probs.detach().cpu().numpy()
-    trees = np.full((len(lengths), max(lengths)), -1, dtype=np.int32)
-    for i, (probs_i, length) in enumerate(zip(probs, lengths)):
-        trees[i, 1:length] = mst.mst(probs_i[:length, :length])[0][1:]
+    probs = (F.softmax(logits_arc, dim=2) * mask.to(logits_arc.device)).cpu().numpy()
+    trees = torch.full((lengths.numel(), max(lengths)), -1)
+    for i, length in enumerate(lengths):
+        trees[i, :length] = torch.from_numpy(mst.mst(probs[i, :length, :length])[0])
     return trees
 
 
 @torch.no_grad()
-def _decode_rels(logits_rel, trees, lengths, root=0):
-    steps = np.arange(trees.shape[1])
-    logits_rel = [logits_rel[i, steps, arcs] for i, arcs in enumerate(trees)]
-    logits_rel = torch.stack(logits_rel, dim=0).detach()
-    logits_rel[:, :, root] = -1e8
-    rels = logits_rel.argmax(dim=2)
-    rels = rels.cpu().numpy()
-    for rels_i, arcs_i in zip(rels, trees):
-        rels_i[:] = np.where(arcs_i == 0, root, rels_i)
-    rels[:, 0] = -1
+def _decode_rels(logits_rel: torch.Tensor, trees: torch.Tensor, root: int = 0) -> torch.Tensor:
+    steps = torch.arange(trees.size(1))
+    logits_rel = [logits_rel[i, steps, heads] for i, heads in enumerate(trees)]
+    logits_rel = torch.stack(logits_rel, dim=0)
+    logits_rel[:, :, root] = -float("inf")
+    rels = logits_rel.argmax(dim=2).detach().cpu()
+    rels.masked_fill_(trees == 0, root)
     return rels
 
 
@@ -235,6 +240,8 @@ class BiLSTMEncoder(Encoder):
         self._hidden_size = lstm_hidden_size
 
     def forward(self, *input_ids: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        if len(input_ids) != len(self.embeds):
+            raise ValueError(f"exact {len(self.embeds)} types of sequences must be given")
         lengths = torch.tensor([x.size(0) for x in input_ids[0]])
         xs = [emb(torch.cat(ids_each, dim=0)) for emb, ids_each in zip(self.embeds, input_ids)]
         if len(self._reduce_embs) > 1:

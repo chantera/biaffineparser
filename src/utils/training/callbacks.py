@@ -1,3 +1,7 @@
+# fmt: off
+__all__ = ["ProgressCallback", "PrintCallback", "MonitorCallback", "EarlyStopCallback", "SaveCallback"]  # noqa
+# fmt: on
+
 import operator
 import os
 
@@ -51,7 +55,7 @@ class ProgressCallback(Callback):
 
 
 class PrintCallback(Callback):
-    def __init__(self, printer=False):
+    def __init__(self, printer=None):
         self.printer = printer or tqdm.write
 
     def on_loop_end(self, context, metrics):
