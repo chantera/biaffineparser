@@ -47,11 +47,14 @@ def train(
     if eval_file:
         eval_dataloader = create_dataloader(read_conll(eval_file), **loader_config, shuffle=False)
 
+    word_embeddings = preprocessor.pretrained_word_embeddings
+    if word_embeddings is not None:
+        word_embeddings = torch.tensor(word_embeddings)
     model_config = dict(
         word_vocab_size=len(preprocessor.vocabs["word"]),
         pretrained_word_vocab_size=len(preprocessor.vocabs["word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
-        pretrained_word_embeddings=preprocessor.pretrained_word_embeddings,
+        pretrained_word_embeddings=word_embeddings,
         n_rels=len(preprocessor.vocabs["rel"]),
     )
     model = build_model(**model_config)
@@ -185,7 +188,8 @@ def build_model(**kwargs):
         (kwargs.get(f"{name}_vocab_size", 1), kwargs.get(f"{name}_embed_size", 100))
         for name in ["word", "pretrained_word", "postag"]
     ]
-    embeddings[1] = kwargs.get("pretrained_word_embeddings") or embeddings[1]
+    if kwargs.get("pretrained_word_embeddings") is not None:
+        embeddings[1] = kwargs["pretrained_word_embeddings"]
     dropout_ratio = kwargs.get("dropout", 0.33)
     encoder = models.BiLSTMEncoder(
         embeddings,
