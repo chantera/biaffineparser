@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import mst
+from utils.chuliu_edmonds import chuliu_edmonds_one_root
 
 
 def build_model(**kwargs) -> "BiaffineParser":
@@ -145,7 +145,8 @@ def _parse_graph(
     probs = (F.softmax(logits_arc, dim=2) * mask.to(logits_arc.device)).cpu().numpy()
     trees = torch.full((lengths.numel(), max(lengths)), -1)
     for i, length in enumerate(lengths):
-        trees[i, :length] = torch.from_numpy(mst.mst(probs[i, :length, :length])[0])
+        trees[i, :length] = torch.from_numpy(chuliu_edmonds_one_root(probs[i, :length, :length]))
+    trees[:, 0] = -1
     return trees
 
 
