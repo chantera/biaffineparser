@@ -1,26 +1,49 @@
 from collections import Counter
-from typing import Iterator, List
+from os import PathLike
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import torch
 
 import utils
 
 
+def _apply(s: str, f: Optional[Callable[[str], str]]) -> str:
+    return f(s) if f is not None else s
+
+
 class Preprocessor:
-    serialize_embeddings = False
+    serialize_embeddings: bool = False
 
     def __init__(self):
-        self.vocabs = {}
-        self._embeddings = None
-        self._embed_file = None
+        self.vocabs: Dict[str, utils.data.Vocab] = {}
+        self._embeddings: Optional[List[List[float]]] = None
+        self._embed_file: Optional[Union[str, bytes, PathLike]] = None
 
-    def build_vocab(self, file, unknown="<UNK>", preprocess=str.lower, min_frequency=2):
+    def build_vocab(
+        self,
+        file: Union[str, bytes, PathLike],
+        unknown: str = "<UNK>",
+        preprocess: Optional[Callable[[str], str]] = str.lower,
+        min_frequency: int = 2,
+    ) -> None:
         word_set, postag_set, rel_set = set(), set(), set()
-        word_counter = Counter()
+        word_counter: Counter = Counter()
         for tokens in utils.conll.read_conll(file):
             words, postags, rels = zip(
                 *[
-                    (preprocess(token["form"]), token["postag"], token["deprel"])
+                    (_apply(token["form"], preprocess), token["postag"], token["deprel"])
                     for token in tokens
                 ]
             )
@@ -39,10 +62,15 @@ class Preprocessor:
         if "pretrained_word" not in self.vocabs:
             self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys([], unknown)
 
-    def load_embeddings(self, file, unknown="<UNK>", preprocess=str.lower):
+    def load_embeddings(
+        self,
+        file: Union[str, bytes, PathLike],
+        unknown: str = "<UNK>",
+        preprocess: Optional[Callable[[str], str]] = str.lower,
+    ) -> None:
         embeddings = utils.data.load_embeddings(file)
         dim = len(next(iter(embeddings.values())))
-        embeddings[preprocess("<ROOT>")] = [0.0] * dim
+        embeddings[_apply("<ROOT>", preprocess)] = [0.0] * dim
         if unknown not in embeddings:
             embeddings[unknown] = [0.0] * dim
         self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys(embeddings.keys(), unknown)
@@ -50,7 +78,9 @@ class Preprocessor:
         self._embeddings = list(embeddings.values())
         self._embed_file = file
 
-    def transform(self, tokens):
+    def transform(
+        self, tokens: Iterable[Dict[str, Any]]
+    ) -> Tuple[List[int], List[int], List[int], List[int], List[int]]:
         words, postags, heads, rels = zip(
             *[(token["form"], token["postag"], token["head"], token["deprel"]) for token in tokens]
         )
@@ -60,22 +90,28 @@ class Preprocessor:
         rel_ids = [self.vocabs["rel"][s] for s in rels]
         return (word_ids, pre_ids, postag_ids, list(heads), rel_ids)
 
-    def __getstate__(self):
+    def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
         if not self.serialize_embeddings:
             state["_embeddings"] = None
         return state
 
     @property
-    def pretrained_word_embeddings(self):
+    def pretrained_word_embeddings(self) -> Optional[List[List[float]]]:
         if self._embeddings is None and self._embed_file is not None:
             v = self.vocabs["pretrained_word"]
+            assert v.unknown_id is not None
             self.load_embeddings(self._embed_file, v.lookup(v.unknown_id), v.preprocess)
             assert len(self.vocabs["pretrained_word"]) == len(v)
         return self._embeddings
 
 
-def create_dataloader(file, preprocessor: Preprocessor, device=None, **kwargs):
+def create_dataloader(
+    file: Union[str, bytes, PathLike],
+    preprocessor: Preprocessor,
+    device: Optional[torch.device] = None,
+    **kwargs,
+) -> torch.utils.data.DataLoader:
     dataset = ListDataset(map(preprocessor.transform, utils.conll.read_conll(file)))
     if kwargs.get("batch_sampler") is None:
         kwargs["batch_sampler"] = BucketSampler(
@@ -98,12 +134,12 @@ class ListDataset(list, torch.utils.data.Dataset):
 class BucketSampler(torch.utils.data.Sampler[List[int]]):
     def __init__(
         self,
-        data_source,
-        key,
+        data_source: Collection,
+        key: Callable[[Any], int],
         batch_size: int = 1,
         shuffle: bool = False,
         drop_last: bool = False,
-        generator=None,
+        generator: Optional[torch.Generator] = None,
     ):
         self.data_source = data_source
         self.key = key
@@ -147,6 +183,8 @@ class BucketSampler(torch.utils.data.Sampler[List[int]]):
             yield bucket
 
 
-def collate(batch, device=None):
+def collate(
+    batch: Iterable[Sequence[Any]], device: Optional[torch.device] = None
+) -> List[torch.Tensor]:
     batch = ([torch.tensor(col, device=device) for col in row] for row in batch)
     return [list(field) for field in zip(*batch)]
