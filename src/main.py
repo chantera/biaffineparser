@@ -49,7 +49,7 @@ def main():
 
 def train(args):
     if args.seed is not None:
-        utils.seed_everything(args.seed)
+        utils.random.seed_everything(args.seed)
     device = torch.device("cuda" if args.cuda else "cpu")
 
     preprocessor = Preprocessor()
