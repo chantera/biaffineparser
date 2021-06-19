@@ -8,6 +8,34 @@ import torch.nn.functional as F
 from utils import mst
 
 
+def build_model(**kwargs) -> "BiaffineParser":
+    embeddings = [
+        (kwargs.get(f"{name}_vocab_size", 1), kwargs.get(f"{name}_embed_size", 100))
+        for name in ["word", "pretrained_word", "postag"]
+    ]
+    if kwargs.get("pretrained_word_embeddings") is not None:
+        embeddings[1] = kwargs["pretrained_word_embeddings"]
+    dropout_ratio = kwargs.get("dropout", 0.33)
+    encoder = BiLSTMEncoder(
+        embeddings,
+        reduce_embeddings=[0, 1],
+        n_lstm_layers=kwargs.get("n_lstm_layers", 3),
+        lstm_hidden_size=kwargs.get("lstm_hidden_size", 400),
+        embedding_dropout=kwargs.get("embedding_dropout", dropout_ratio),
+        lstm_dropout=kwargs.get("lstm_dropout", dropout_ratio),
+        recurrent_dropout=kwargs.get("recurrent_dropout", dropout_ratio),
+    )
+    model = BiaffineParser(
+        encoder,
+        n_rels=kwargs.get("n_rels"),
+        arc_mlp_units=kwargs.get("arc_mlp_units", 500),
+        rel_mlp_units=kwargs.get("rel_mlp_units", 100),
+        arc_mlp_dropout=kwargs.get("arc_mlp_dropout", dropout_ratio),
+        rel_mlp_dropout=kwargs.get("rel_mlp_dropout", dropout_ratio),
+    )
+    return model
+
+
 class BiaffineParser(nn.Module):
     def __init__(
         self,
