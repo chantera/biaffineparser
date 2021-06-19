@@ -7,7 +7,7 @@ import torch
 class Trainer:
     @dataclasses.dataclass
     class Config:
-        epoch: int = 1
+        epochs: int = 1
         max_steps: Optional[int] = None
         eval_interval: Optional[int] = None
         max_grad_norm: Optional[float] = None
@@ -47,7 +47,7 @@ class Trainer:
         return context
 
     def fit(self, train_dataloader, eval_dataloader=None):
-        num_epochs, max_steps = self.config.epoch, self.config.max_steps
+        num_epochs, max_steps = self.config.epochs, self.config.max_steps
         if max_steps is not None:
             num_updates_per_epoch = len(train_dataloader)
             num_epochs = -(-max_steps // num_updates_per_epoch)

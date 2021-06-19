@@ -25,7 +25,8 @@ def main():
     subparser.add_argument("--train_file", type=str, required=True, metavar="FILE")
     subparser.add_argument("--eval_file", type=str, default=None, metavar="FILE")
     subparser.add_argument("--embed_file", type=str, default=None, metavar="FILE")
-    subparser.add_argument("--epochs", type=int, default=300, metavar="NUM")
+    subparser.add_argument("--max_steps", type=int, default=50000, metavar="NUM")
+    subparser.add_argument("--eval_interval", type=int, default=100, metavar="NUM")
     subparser.add_argument("--batch_size", type=int, default=5000, metavar="NUM")
     subparser.add_argument("--lr", type=float, default=2e-3, metavar="VALUE")
     subparser.add_argument("--cuda", action="store_true")
@@ -79,7 +80,9 @@ def train(args):
     model = build_model(**model_config)
     model.to(device)
 
-    trainer = create_trainer(model, lr=args.lr, epoch=args.epochs)
+    trainer = create_trainer(
+        model, lr=args.lr, max_steps=args.max_steps, eval_interval=args.eval_interval
+    )
     trainer.add_callback(utils.training.PrintCallback(printer=logger.info))
     if eval_dataloader:
         rel_map = {v: k for k, v in preprocessor.vocabs["rel"].mapping.items()}
