@@ -2,6 +2,7 @@ import logging
 import os
 from functools import partial
 from tempfile import NamedTemporaryFile
+from typing import Iterator, List
 
 import torch
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -38,6 +39,7 @@ def train(
     loader_config = dict(
         batch_size=batch_size,
         map_fn=preprocessor.transform,
+        bucket_key=lambda x: len(x[0]),
         collate_fn=partial(collate, device=device),
     )
     train_dataloader = create_dataloader(read_conll(train_file), **loader_config, shuffle=True)
@@ -77,6 +79,7 @@ def evaluate(
     loader_config = dict(
         batch_size=batch_size,
         map_fn=preprocessor.transform,
+        bucket_key=lambda x: len(x[0]),
         collate_fn=partial(collate, device=device),
     )
     eval_dataloader = create_dataloader(read_conll(eval_file), **loader_config, shuffle=False)
@@ -99,16 +102,77 @@ def evaluate(
         trainer.evaluate(eval_dataloader)
 
 
-def create_dataloader(examples, map_fn=None, **kwargs):
+def create_dataloader(examples, map_fn=None, bucket_key=None, **kwargs):
     if map_fn:
         examples = map(map_fn, examples)
     dataset = ListDataset(examples)
+    if kwargs.get("batch_sampler") is None and bucket_key is not None:
+        kwargs["batch_sampler"] = BucketSampler(
+            dataset,
+            key=bucket_key,
+            batch_size=kwargs.pop("batch_size", 1),
+            shuffle=kwargs.pop("shuffle", False),
+            drop_last=kwargs.pop("drop_last", False),
+            generator=kwargs.get("generator"),
+        )
     loader = torch.utils.data.DataLoader(dataset, **kwargs)
     return loader
 
 
 class ListDataset(list, torch.utils.data.Dataset):
     pass
+
+
+class BucketSampler(torch.utils.data.Sampler[List[int]]):
+    def __init__(
+        self,
+        data_source,
+        key,
+        batch_size: int = 1,
+        shuffle: bool = False,
+        drop_last: bool = False,
+        generator=None,
+    ):
+        self.data_source = data_source
+        self.key = key
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.generator = generator
+        # NOTE: bucketing is applied only one time to fix the number of batches
+        self._buckets = list(self._generate_buckets())
+
+    def __iter__(self) -> Iterator[List[int]]:
+        if self.shuffle:
+            indices = torch.randperm(len(self._buckets), generator=self.generator)
+            return (self._buckets[i] for i in indices)
+        return iter(self._buckets)
+
+    def __len__(self) -> int:
+        return len(self._buckets)
+
+    def _generate_buckets(self) -> Iterator[List[int]]:
+        lengths: Iterator
+        lengths = ((i, float(self.key(sample))) for i, sample in enumerate(self.data_source))
+
+        if self.shuffle:
+            perturbation = torch.rand(len(self.data_source), generator=self.generator)
+            lengths = ((i, length + noise) for (i, length), noise in zip(lengths, perturbation))
+            reverse = torch.rand(1, generator=self.generator).item() > 0.5
+            lengths = iter(sorted(lengths, key=lambda x: x[1], reverse=reverse))
+
+        bucket: List[int] = []
+        accum_len = 0
+        for index, length in lengths:
+            length = int(length)
+            if accum_len + length > self.batch_size:
+                yield bucket
+                bucket = []
+                accum_len = 0
+            bucket.append(index)
+            accum_len += length
+        if not self.drop_last and bucket:
+            yield bucket
 
 
 def collate(batch, device=None):

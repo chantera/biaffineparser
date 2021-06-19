@@ -67,7 +67,7 @@ class Trainer:
         for cb in list(iter(self._callbacks)):
             if isinstance(cb, _EvaluateCallback):
                 self.remove_callback(cb)
-        if eval_dataloader:
+        if eval_dataloader is not None:
             self.add_callback(_EvaluateCallback(eval_dataloader, self.config.eval_interval))
 
         self._trigger("on_train_begin", context)
