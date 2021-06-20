@@ -28,7 +28,7 @@ def main():
     subparser.add_argument("--max_steps", type=int, default=50000, metavar="NUM")
     subparser.add_argument("--eval_interval", type=int, default=100, metavar="NUM")
     subparser.add_argument("--batch_size", type=int, default=5000, metavar="NUM")
-    subparser.add_argument("--lr", type=float, default=2e-3, metavar="VALUE")
+    subparser.add_argument("--learning_rate", "--lr", type=float, default=2e-3, metavar="VALUE")
     subparser.add_argument("--cuda", action="store_true")
     subparser.add_argument("--save_dir", type=str, default=None, metavar="DIR")
     subparser.add_argument("--seed", type=int, default=None, metavar="VALUE")
@@ -81,7 +81,7 @@ def train(args):
     model.to(device)
 
     trainer = create_trainer(
-        model, lr=args.lr, max_steps=args.max_steps, eval_interval=args.eval_interval
+        model, lr=args.learning_rate, max_steps=args.max_steps, eval_interval=args.eval_interval
     )
     trainer.add_callback(utils.training.PrintCallback(printer=logger.info))
     if eval_dataloader:
