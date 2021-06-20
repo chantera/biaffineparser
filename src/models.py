@@ -108,6 +108,8 @@ class BiaffineParser(nn.Module):
         logits_rel: Optional[torch.Tensor] = None,
         lengths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        if lengths is None:
+            lengths = torch.full((logits_arc.size(0),), fill_value=logits_arc.size(1))
         arcs = _parse_graph(logits_arc, lengths)
         rels = _decode_rels(logits_rel, arcs) if logits_rel is not None else None
         return arcs, rels
@@ -123,7 +125,10 @@ class BiaffineParser(nn.Module):
         if true_rels is not None:
             true_rels = nn.utils.rnn.pad_sequence(true_rels, batch_first=True, padding_value=-1)
         result = _compute_metrics(logits_arc, true_arcs, logits_rel, true_rels, ignore_index=-1)
-        result["loss"] = result["arc_loss"] + (result["rel_loss"] or 0.0)
+        if result["rel_loss"] is not None:
+            result["loss"] = result["arc_loss"] + result["rel_loss"]
+        else:
+            result["loss"] = result["arc_loss"]
         return result
 
 
@@ -147,7 +152,8 @@ def _mask_arc(lengths: torch.Tensor, mask_loop: bool = True) -> Optional[torch.T
 def _parse_graph(
     logits_arc: torch.Tensor, lengths: torch.Tensor, mask: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
-    mask = mask or _mask_arc(lengths, mask_loop=True)
+    if mask is None:
+        mask = _mask_arc(lengths, mask_loop=True)
     probs = (F.softmax(logits_arc, dim=2) * mask.to(logits_arc.device)).cpu().numpy()
     trees = torch.full((lengths.numel(), max(lengths)), -1)
     for i, length in enumerate(lengths):
