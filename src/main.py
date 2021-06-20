@@ -75,7 +75,7 @@ def train(args):
         pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
         pretrained_word_embeddings=word_embeddings,
-        n_rels=len(preprocessor.vocabs["rel"]),
+        n_deprels=len(preprocessor.vocabs["deprel"]),
     )
     model = build_model(**model_config)
     model.to(device)
@@ -85,8 +85,8 @@ def train(args):
     )
     trainer.add_callback(utils.training.PrintCallback(printer=logger.info))
     if eval_dataloader:
-        rel_map = {v: k for k, v in preprocessor.vocabs["rel"].mapping.items()}
-        trainer.add_callback(EvaluateCallback(args.eval_file, rel_map), priority=0)
+        deprel_map = {v: k for k, v in preprocessor.vocabs["deprel"].mapping.items()}
+        trainer.add_callback(EvaluateCallback(args.eval_file, deprel_map), priority=0)
         if args.save_dir:
             torch.save(preprocessor, os.path.join(args.save_dir, "preprocessor.pt"))
             trainer.add_callback(
@@ -112,7 +112,7 @@ def evaluate(args):
         word_vocab_size=len(preprocessor.vocabs["word"]),
         pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
-        n_rels=len(preprocessor.vocabs["rel"]),
+        n_deprels=len(preprocessor.vocabs["deprel"]),
     )
     model = build_model(**model_config)
     model.load_state_dict(checkpoint["model"])
@@ -120,8 +120,8 @@ def evaluate(args):
 
     trainer = create_trainer(model)
     trainer.add_callback(utils.training.PrintCallback(printer=logger.info))
-    rel_map = {v: k for k, v in preprocessor.vocabs["rel"].mapping.items()}
-    trainer.add_callback(EvaluateCallback(args.eval_file, rel_map, args.verbose), priority=0)
+    deprel_map = {v: k for k, v in preprocessor.vocabs["deprel"].mapping.items()}
+    trainer.add_callback(EvaluateCallback(args.eval_file, deprel_map, args.verbose), priority=0)
     with logging_redirect_tqdm(loggers=[logger]):
         trainer.evaluate(eval_dataloader)
 

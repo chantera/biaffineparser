@@ -1,4 +1,5 @@
 import math
+from functools import partial
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import torch
@@ -27,11 +28,11 @@ def build_model(**kwargs) -> "BiaffineParser":
     )
     model = BiaffineParser(
         encoder,
-        n_rels=kwargs.get("n_rels"),
-        arc_mlp_units=kwargs.get("arc_mlp_units", 500),
-        rel_mlp_units=kwargs.get("rel_mlp_units", 100),
-        arc_mlp_dropout=kwargs.get("arc_mlp_dropout", dropout_ratio),
-        rel_mlp_dropout=kwargs.get("rel_mlp_dropout", dropout_ratio),
+        n_deprels=kwargs.get("n_deprels"),
+        head_mlp_units=kwargs.get("head_mlp_units", 500),
+        deprel_mlp_units=kwargs.get("deprel_mlp_units", 100),
+        head_mlp_dropout=kwargs.get("head_mlp_dropout", dropout_ratio),
+        deprel_mlp_dropout=kwargs.get("deprel_mlp_dropout", dropout_ratio),
     )
     return model
 
@@ -40,61 +41,56 @@ class BiaffineParser(nn.Module):
     def __init__(
         self,
         encoder: "Encoder",
-        n_rels: Optional[int] = None,
-        arc_mlp_units: Union[Sequence[int], int] = 500,
-        rel_mlp_units: Union[Sequence[int], int] = 100,
-        arc_mlp_dropout: float = 0.0,
-        rel_mlp_dropout: float = 0.0,
+        n_deprels: Optional[int] = None,
+        head_mlp_units: Union[Sequence[int], int] = 500,
+        deprel_mlp_units: Union[Sequence[int], int] = 100,
+        head_mlp_dropout: float = 0.0,
+        deprel_mlp_dropout: float = 0.0,
     ):
         super().__init__()
-        if isinstance(arc_mlp_units, int):
-            arc_mlp_units = [arc_mlp_units]
-        if isinstance(rel_mlp_units, int):
-            rel_mlp_units = [rel_mlp_units]
+        if isinstance(head_mlp_units, int):
+            head_mlp_units = [head_mlp_units]
+        if isinstance(deprel_mlp_units, int):
+            deprel_mlp_units = [deprel_mlp_units]
+        activation = partial(F.leaky_relu, negative_slope=0.1)
 
         def _create_mlp(in_size, units, dropout):
             return MLP(
-                [
-                    MLP.Layer(
-                        units[i - 1] if i > 0 else in_size,
-                        u,
-                        lambda x: F.leaky_relu(x, negative_slope=0.1),
-                        dropout,
-                    )
-                    for i, u in enumerate(units)
-                ]
+                MLP.Layer(units[i - 1] if i > 0 else in_size, u, activation, dropout)
+                for i, u in enumerate(units)
             )
 
         self.encoder = encoder
-        h_dim = self.encoder.out_size
-        self.mlp_arc_head = _create_mlp(h_dim, arc_mlp_units, arc_mlp_dropout)
-        self.mlp_arc_dep = _create_mlp(h_dim, arc_mlp_units, arc_mlp_dropout)
-        self.biaf_arc = Biaffine(arc_mlp_units[-1], arc_mlp_units[-1], 1)
-        self.mlp_rel_head = None
-        self.mlp_rel_dep = None
-        self.biaf_rel = None
-        if n_rels is not None:
-            self.mlp_rel_head = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
-            self.mlp_rel_dep = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
-            self.biaf_rel = Biaffine(rel_mlp_units[-1], rel_mlp_units[-1], n_rels)
+        in_size = self.encoder.out_size
+        # NOTE: `in` and `out` are short for incoming (parent) and outgoing (child), respectively
+        self.mlp_head_in = _create_mlp(in_size, head_mlp_units, head_mlp_dropout)
+        self.mlp_head_out = _create_mlp(in_size, head_mlp_units, head_mlp_dropout)
+        self.biaf_head = Biaffine(head_mlp_units[-1], head_mlp_units[-1], 1)
+        self.mlp_deprel_in = None
+        self.mlp_deprel_out = None
+        self.biaf_deprel = None
+        if n_deprels is not None:
+            self.mlp_deprel_in = _create_mlp(in_size, deprel_mlp_units, deprel_mlp_dropout)
+            self.mlp_deprel_out = _create_mlp(in_size, deprel_mlp_units, deprel_mlp_dropout)
+            self.biaf_deprel = Biaffine(deprel_mlp_units[-1], deprel_mlp_units[-1], n_deprels)
 
     def forward(
         self, *input_ids: Sequence[torch.Tensor]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         hs, lengths = self.encoder(*input_ids)  # => (b, n, d)
-        hs_arc_h = self.mlp_arc_head(hs)
-        hs_arc_d = self.mlp_arc_dep(hs)
-        logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
+        hs_head_in = self.mlp_head_in(hs)
+        hs_head_out = self.mlp_head_out(hs)
+        logits_head = self.biaf_head(hs_head_out, hs_head_in).squeeze_(3)  # outgoing -> incoming
         mask = _mask_arc(lengths, mask_loop=not self.training)
         if mask is not None:
-            logits_arc.masked_fill_(mask.logical_not().to(logits_arc.device), -float("inf"))
-        logits_rel = None
-        if self.biaf_rel is not None:
-            assert self.mlp_rel_head is not None and self.mlp_rel_dep
-            hs_rel_h = self.mlp_rel_head(hs)
-            hs_rel_d = self.mlp_rel_dep(hs)
-            logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
-        return logits_arc, logits_rel, lengths  # (b, n, n), (b, n, n, n_rels), (b,)
+            logits_head.masked_fill_(mask.logical_not().to(logits_head.device), -float("inf"))
+        logits_deprel = None
+        if self.biaf_deprel is not None:
+            assert self.mlp_deprel_in is not None and self.mlp_deprel_out
+            hs_deprel_in = self.mlp_deprel_in(hs)
+            hs_deprel_out = self.mlp_deprel_out(hs)
+            logits_deprel = self.biaf_deprel(hs_deprel_out, hs_deprel_in)  # outgoing -> incoming
+        return logits_head, logits_deprel, lengths  # (b, n, n), (b, n, n, n_deprels), (b,)
 
     def parse(
         self, *input_ids: Sequence[torch.Tensor]
@@ -104,31 +100,35 @@ class BiaffineParser(nn.Module):
     @torch.no_grad()
     def decode(
         self,
-        logits_arc: torch.Tensor,
-        logits_rel: Optional[torch.Tensor] = None,
+        logits_head: torch.Tensor,
+        logits_deprel: Optional[torch.Tensor] = None,
         lengths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         if lengths is None:
-            lengths = torch.full((logits_arc.size(0),), fill_value=logits_arc.size(1))
-        arcs = _parse_graph(logits_arc, lengths)
-        rels = _decode_rels(logits_rel, arcs) if logits_rel is not None else None
-        return arcs, rels
+            lengths = torch.full((logits_head.size(0),), fill_value=logits_head.size(1))
+        heads = _parse_graph(logits_head, lengths)
+        deprels = _decode_deprels(logits_deprel, heads) if logits_deprel is not None else None
+        return heads, deprels
 
     def compute_metrics(
         self,
-        logits_arc: torch.Tensor,
-        logits_rel: Optional[torch.Tensor],
-        true_arcs: Sequence[torch.Tensor],
-        true_rels: Optional[Sequence[torch.Tensor]],
+        logits_head: torch.Tensor,
+        logits_deprel: Optional[torch.Tensor],
+        true_heads: Sequence[torch.Tensor],
+        true_deprels: Optional[Sequence[torch.Tensor]],
     ) -> Dict[str, Any]:
-        true_arcs = nn.utils.rnn.pad_sequence(true_arcs, batch_first=True, padding_value=-1)
-        if true_rels is not None:
-            true_rels = nn.utils.rnn.pad_sequence(true_rels, batch_first=True, padding_value=-1)
-        result = _compute_metrics(logits_arc, true_arcs, logits_rel, true_rels, ignore_index=-1)
-        if result["rel_loss"] is not None:
-            result["loss"] = result["arc_loss"] + result["rel_loss"]
+        true_heads = nn.utils.rnn.pad_sequence(true_heads, batch_first=True, padding_value=-1)
+        if true_deprels is not None:
+            true_deprels = nn.utils.rnn.pad_sequence(
+                true_deprels, batch_first=True, padding_value=-1
+            )
+        result = _compute_metrics(
+            logits_head, true_heads, logits_deprel, true_deprels, ignore_index=-1
+        )
+        if result["deprel_loss"] is not None:
+            result["loss"] = result["head_loss"] + result["deprel_loss"]
         else:
-            result["loss"] = result["arc_loss"]
+            result["loss"] = result["head_loss"]
         return result
 
 
@@ -150,11 +150,11 @@ def _mask_arc(lengths: torch.Tensor, mask_loop: bool = True) -> Optional[torch.T
 
 @torch.no_grad()
 def _parse_graph(
-    logits_arc: torch.Tensor, lengths: torch.Tensor, mask: Optional[torch.Tensor] = None
+    logits_head: torch.Tensor, lengths: torch.Tensor, mask: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     if mask is None:
         mask = _mask_arc(lengths, mask_loop=True)
-    probs = (F.softmax(logits_arc, dim=2) * mask.to(logits_arc.device)).cpu().numpy()
+    probs = (F.softmax(logits_head, dim=2) * mask.to(logits_head.device)).cpu().numpy()
     trees = torch.full((lengths.numel(), max(lengths)), -1)
     for i, length in enumerate(lengths):
         trees[i, :length] = torch.from_numpy(chuliu_edmonds_one_root(probs[i, :length, :length]))
@@ -163,25 +163,27 @@ def _parse_graph(
 
 
 @torch.no_grad()
-def _decode_rels(logits_rel: torch.Tensor, trees: torch.Tensor, root: int = 0) -> torch.Tensor:
+def _decode_deprels(
+    logits_deprel: torch.Tensor, trees: torch.Tensor, root: int = 0
+) -> torch.Tensor:
     steps = torch.arange(trees.size(1))
-    logits_rel = [logits_rel[i, steps, heads] for i, heads in enumerate(trees)]
-    logits_rel = torch.stack(logits_rel, dim=0)
-    logits_rel[:, :, root] = -float("inf")
-    rels = logits_rel.argmax(dim=2).detach().cpu()
-    rels.masked_fill_(trees == 0, root)
-    return rels
+    logits_deprel = [logits_deprel[i, steps, heads] for i, heads in enumerate(trees)]
+    logits_deprel = torch.stack(logits_deprel, dim=0)
+    logits_deprel[:, :, root] = -float("inf")
+    deprels = logits_deprel.argmax(dim=2).detach().cpu()
+    deprels.masked_fill_(trees == 0, root)
+    return deprels
 
 
 def _compute_metrics(
-    logits_arc: torch.Tensor,
-    true_arcs: torch.Tensor,
-    logits_rel: Optional[torch.Tensor] = None,
-    true_rels: Optional[torch.Tensor] = None,
+    logits_head: torch.Tensor,
+    true_heads: torch.Tensor,
+    logits_deprel: Optional[torch.Tensor] = None,
+    true_deprels: Optional[torch.Tensor] = None,
     ignore_index: Optional[int] = -1,
-    use_predicted_arcs_for_rels: bool = False,
+    use_predicted_heads_for_deprels: bool = False,
 ) -> Dict[str, Any]:
-    result = dict.fromkeys(["arc_loss", "arc_accuracy", "rel_loss", "rel_accuracy"])
+    result = dict.fromkeys(["head_loss", "head_accuracy", "deprel_loss", "deprel_accuracy"])
 
     def metrics(y, t, ignore_index):
         loss = F.cross_entropy(y, t, ignore_index=ignore_index, reduction="sum")
@@ -189,29 +191,31 @@ def _compute_metrics(
         accuracy = categorical_accuracy(y, t, ignore_index)
         return loss, accuracy
 
-    logits_arc, true_arcs = logits_arc[:, 1:], true_arcs[:, 1:]  # exclude attachment for the root
-    logits_arc_flatten = logits_arc.contiguous().view(-1, logits_arc.size(-1))
-    true_arcs_flatten = true_arcs.contiguous().view(-1)
-    arc_loss, arc_accuracy = metrics(logits_arc_flatten, true_arcs_flatten, ignore_index)
-    result.update(arc_loss=arc_loss, arc_accuracy=arc_accuracy)
+    logits_head, true_heads = logits_head[:, 1:], true_heads[:, 1:]  # exclude root
+    logits_head_flatten = logits_head.contiguous().view(-1, logits_head.size(-1))
+    true_heads_flatten = true_heads.contiguous().view(-1)
+    head_loss, head_accuracy = metrics(logits_head_flatten, true_heads_flatten, ignore_index)
+    result.update(head_loss=head_loss, head_accuracy=head_accuracy)
 
-    if logits_rel is None:
+    if logits_deprel is None:
         return result
-    elif true_rels is None:
-        raise ValueError("'true_rels' must be given to compute loss for rels")
+    elif true_deprels is None:
+        raise ValueError("'true_deprels' must be given to compute loss for deprels")
 
-    if use_predicted_arcs_for_rels:
-        arcs = logits_arc.argmax(dim=2)
+    if use_predicted_heads_for_deprels:
+        heads = logits_head.argmax(dim=2)
     else:
-        arcs = true_arcs.masked_fill(true_arcs == -1, 0)
+        heads = true_heads.masked_fill(true_heads == -1, 0)
 
-    logits_rel, true_rels = logits_rel[:, 1:], true_rels[:, 1:]  # exclude attachment for the root
-    gather_index = arcs.view(*arcs.size(), 1, 1).expand(-1, -1, -1, logits_rel.size(-1))
-    logits_rel = torch.gather(logits_rel, dim=2, index=gather_index)
-    logits_rel_flatten = logits_rel.contiguous().view(-1, logits_rel.size(-1))
-    true_rels_flatten = true_rels.contiguous().view(-1)
-    rel_loss, rel_accuracy = metrics(logits_rel_flatten, true_rels_flatten, ignore_index)
-    result.update(rel_loss=rel_loss, rel_accuracy=rel_accuracy)
+    logits_deprel, true_deprels = logits_deprel[:, 1:], true_deprels[:, 1:]  # exclude root
+    gather_index = heads.view(*heads.size(), 1, 1).expand(-1, -1, -1, logits_deprel.size(-1))
+    logits_deprel = torch.gather(logits_deprel, dim=2, index=gather_index)
+    logits_deprel_flatten = logits_deprel.contiguous().view(-1, logits_deprel.size(-1))
+    true_deprels_flatten = true_deprels.contiguous().view(-1)
+    deprel_loss, deprel_accuracy = metrics(
+        logits_deprel_flatten, true_deprels_flatten, ignore_index
+    )
+    result.update(deprel_loss=deprel_loss, deprel_accuracy=deprel_accuracy)
 
     return result
 
@@ -352,9 +356,9 @@ class LSTM(nn.LSTM):
 
 class MLP(nn.Sequential):
     def __init__(self, layers: Iterable["MLP.Layer"]):
-        if not all(isinstance(layer, MLP.Layer) for layer in layers):
-            raise TypeError("each layer must be an instance of MLP.Layer")
         super().__init__(*layers)
+        if not all(isinstance(layer, MLP.Layer) for layer in self):
+            raise TypeError("each layer must be an instance of MLP.Layer")
 
     class Layer(nn.Module):
         def __init__(

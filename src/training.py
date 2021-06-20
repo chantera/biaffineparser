@@ -13,20 +13,20 @@ def create_trainer(model, **kwargs):
     kwargs.setdefault("step", forward)
     # NOTE: `scheduler.step()` is called every iteration in the trainer
     trainer = utils.training.Trainer(model, (optimizer, scheduler), **kwargs)
-    trainer.add_metric("arc_loss", "arc_accuracy", "rel_loss", "rel_accuracy")
+    trainer.add_metric("head_loss", "head_accuracy", "deprel_loss", "deprel_accuracy")
     trainer.add_callback(ProgressCallback())
     return trainer
 
 
 def forward(model, batch):
-    *xs, heads, rels = batch
-    logits_arc, logits_rel, lengths = model(*xs)
-    result = model.compute_metrics(logits_arc, logits_rel, heads, rels)
-    if logits_rel is None:
-        result.update(rel_loss=float("nan"), rel_accuracy=float("nan"))
+    *xs, heads, deprels = batch
+    logits_head, logits_deprel, lengths = model(*xs)
+    result = model.compute_metrics(logits_head, logits_deprel, heads, deprels)
+    if logits_deprel is None:
+        result.update(deprel_loss=float("nan"), deprel_accuracy=float("nan"))
     if not model.training:
-        arcs, rels = model.decode(logits_arc, logits_rel, lengths)
-        result.update(arcs=arcs, rels=rels, lengths=lengths)
+        predicted_heads, predicted_deprels = model.decode(logits_head, logits_deprel, lengths)
+        result.update(heads=predicted_heads, deprels=predicted_deprels, lengths=lengths)
     return result
 
 
@@ -35,7 +35,7 @@ class ProgressCallback(utils.training.ProgressCallback):
         super().on_step_end(context, **kwargs)
         if context.train:
             loss = kwargs["output"]["loss"].item()
-            correct, total = kwargs["output"]["arc_accuracy"]
+            correct, total = kwargs["output"]["head_accuracy"]
             accuracy = correct / total if total > 0 else float("nan")
             pbar_dict = {
                 "epoch": context.epoch,
@@ -48,9 +48,9 @@ class ProgressCallback(utils.training.ProgressCallback):
 class EvaluateCallback(utils.training.Callback):
     printer = tqdm.write
 
-    def __init__(self, gold_file, rel_map, verbose=False):
+    def __init__(self, gold_file, deprel_map, verbose=False):
         self.gold_file = gold_file
-        self.rel_map = rel_map
+        self.deprel_map = deprel_map
         self.verbose = verbose
         self.result = {}
         self._outputs = []
@@ -58,15 +58,17 @@ class EvaluateCallback(utils.training.Callback):
     def on_step_end(self, context, output):
         if context.train:
             return
-        arcs, rels, lengths = output["arcs"], output["rels"], output["lengths"]
-        assert arcs.size(0) == len(lengths)
-        arcs = (idxs[:n] for idxs, n in zip(arcs.tolist(), lengths))
-        if rels is not None:
-            rel_map = self.rel_map
-            rels = ([rel_map[idx] for idx in idxs[:n]] for idxs, n in zip(rels.tolist(), lengths))
+        heads, deprels, lengths = output["heads"], output["deprels"], output["lengths"]
+        assert heads.size(0) == len(lengths)
+        heads = (idxs[:n] for idxs, n in zip(heads.tolist(), lengths))
+        if deprels is not None:
+            deprel_map = self.deprel_map
+            deprels = (
+                [deprel_map[idx] for idx in idxs[:n]] for idxs, n in zip(deprels.tolist(), lengths)
+            )
         else:
-            rels = ([None] * n for n in lengths)
-        self._outputs.extend(zip(arcs, rels))
+            deprels = ([None] * n for n in lengths)
+        self._outputs.extend(zip(heads, deprels))
 
     def on_loop_end(self, context, metrics):
         if context.train:
@@ -84,9 +86,9 @@ class EvaluateCallback(utils.training.Callback):
             self.printer(self.result["raw"])
 
     def _yield_prediction(self):
-        for tokens, (arcs, rels) in zip(utils.conll.read_conll(self.gold_file), self._outputs):
-            if len(arcs) != len(tokens):
+        for tokens, (heads, deprels) in zip(utils.conll.read_conll(self.gold_file), self._outputs):
+            if len(heads) != len(tokens):
                 raise ValueError("heads must be aligned with tokens")
-            for token, head, rel in zip(tokens, arcs, rels):
-                token.update(head=head, deprel=rel)
+            for token, head, deprel in zip(tokens, heads, deprels):
+                token.update(head=head, deprel=deprel)
             yield tokens

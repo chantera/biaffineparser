@@ -38,10 +38,10 @@ class Preprocessor:
         preprocess: Optional[Callable[[str], str]] = str.lower,
         min_frequency: int = 2,
     ) -> None:
-        word_set, postag_set, rel_set = set(), set(), set()
+        word_set, postag_set, deprel_set = set(), set(), set()
         word_counter: Counter = Counter()
         for tokens in utils.conll.read_conll(file):
-            words, postags, rels = zip(
+            words, postags, deprels = zip(
                 *[
                     (_apply(token["form"], preprocess), token["postag"], token["deprel"])
                     for token in tokens
@@ -49,7 +49,7 @@ class Preprocessor:
             )
             word_counter.update(words)
             postag_set.update(postags)
-            rel_set.update(rels)
+            deprel_set.update(deprels)
         for word, count in word_counter.most_common():
             if count < min_frequency:
                 break
@@ -58,7 +58,7 @@ class Preprocessor:
         self.vocabs["word"] = utils.data.Vocab.fromkeys(word_set, unknown)
         self.vocabs["word"].preprocess = preprocess
         self.vocabs["postag"] = utils.data.Vocab.fromkeys(postag_set, unknown)
-        self.vocabs["rel"] = utils.data.Vocab.fromkeys(rel_set)
+        self.vocabs["deprel"] = utils.data.Vocab.fromkeys(deprel_set)
         if "pretrained_word" not in self.vocabs:
             self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys([], unknown)
 
@@ -81,14 +81,14 @@ class Preprocessor:
     def transform(
         self, tokens: Iterable[Dict[str, Any]]
     ) -> Tuple[List[int], List[int], List[int], List[int], List[int]]:
-        words, postags, heads, rels = zip(
+        words, postags, heads, deprels = zip(
             *[(token["form"], token["postag"], token["head"], token["deprel"]) for token in tokens]
         )
         word_ids = [self.vocabs["word"][s] for s in words]
         pre_ids = [self.vocabs["pretrained_word"][s] for s in words]
         postag_ids = [self.vocabs["postag"][s] for s in postags]
-        rel_ids = [self.vocabs["rel"][s] for s in rels]
-        return (word_ids, pre_ids, postag_ids, list(heads), rel_ids)
+        deprel_ids = [self.vocabs["deprel"][s] for s in deprels]
+        return (word_ids, pre_ids, postag_ids, list(heads), deprel_ids)
 
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
