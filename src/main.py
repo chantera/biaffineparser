@@ -72,7 +72,7 @@ def train(args):
         word_embeddings = torch.tensor(word_embeddings)
     model_config = dict(
         word_vocab_size=len(preprocessor.vocabs["word"]),
-        pretrained_word_vocab_size=len(preprocessor.vocabs["word"]),
+        pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
         pretrained_word_embeddings=word_embeddings,
         n_rels=len(preprocessor.vocabs["rel"]),
@@ -110,7 +110,7 @@ def evaluate(args):
     checkpoint = torch.load(args.checkpoint_file)
     model_config = dict(
         word_vocab_size=len(preprocessor.vocabs["word"]),
-        pretrained_word_vocab_size=len(preprocessor.vocabs["word"]),
+        pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
         n_rels=len(preprocessor.vocabs["rel"]),
     )
