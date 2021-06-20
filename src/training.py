@@ -22,6 +22,8 @@ def forward(model, batch):
     *xs, heads, rels = batch
     logits_arc, logits_rel, lengths = model(*xs)
     result = model.compute_metrics(logits_arc, logits_rel, heads, rels)
+    if logits_rel is None:
+        result.update(rel_loss=float("nan"), rel_accuracy=float("nan"))
     if not model.training:
         arcs, rels = model.decode(logits_arc, logits_rel, lengths)
         result.update(arcs=arcs, rels=rels, lengths=lengths)

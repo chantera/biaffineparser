@@ -47,7 +47,6 @@ class BiaffineParser(nn.Module):
         rel_mlp_dropout: float = 0.0,
     ):
         super().__init__()
-        assert n_rels is not None  # TODO: support unlabeled parsing
         if isinstance(arc_mlp_units, int):
             arc_mlp_units = [arc_mlp_units]
         if isinstance(rel_mlp_units, int):
@@ -70,10 +69,14 @@ class BiaffineParser(nn.Module):
         h_dim = self.encoder.out_size
         self.mlp_arc_head = _create_mlp(h_dim, arc_mlp_units, arc_mlp_dropout)
         self.mlp_arc_dep = _create_mlp(h_dim, arc_mlp_units, arc_mlp_dropout)
-        self.mlp_rel_head = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
-        self.mlp_rel_dep = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
         self.biaf_arc = Biaffine(arc_mlp_units[-1], arc_mlp_units[-1], 1)
-        self.biaf_rel = Biaffine(rel_mlp_units[-1], rel_mlp_units[-1], n_rels)
+        self.mlp_rel_head = None
+        self.mlp_rel_dep = None
+        self.biaf_rel = None
+        if n_rels is not None:
+            self.mlp_rel_head = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
+            self.mlp_rel_dep = _create_mlp(h_dim, rel_mlp_units, rel_mlp_dropout)
+            self.biaf_rel = Biaffine(rel_mlp_units[-1], rel_mlp_units[-1], n_rels)
 
     def forward(
         self, *input_ids: Sequence[torch.Tensor]
@@ -81,13 +84,16 @@ class BiaffineParser(nn.Module):
         hs, lengths = self.encoder(*input_ids)  # => (b, n, d)
         hs_arc_h = self.mlp_arc_head(hs)
         hs_arc_d = self.mlp_arc_dep(hs)
-        hs_rel_h = self.mlp_rel_head(hs)
-        hs_rel_d = self.mlp_rel_dep(hs)
         logits_arc = self.biaf_arc(hs_arc_d, hs_arc_h).squeeze_(3)
         mask = _mask_arc(lengths, mask_loop=not self.training)
         if mask is not None:
             logits_arc.masked_fill_(mask.logical_not().to(logits_arc.device), -float("inf"))
-        logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
+        logits_rel = None
+        if self.biaf_rel is not None:
+            assert self.mlp_rel_head is not None and self.mlp_rel_dep
+            hs_rel_h = self.mlp_rel_head(hs)
+            hs_rel_d = self.mlp_rel_dep(hs)
+            logits_rel = self.biaf_rel(hs_rel_d, hs_rel_h)
         return logits_arc, logits_rel, lengths  # (b, n, n), (b, n, n, n_rels), (b,)
 
     def parse(
@@ -103,7 +109,7 @@ class BiaffineParser(nn.Module):
         lengths: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         arcs = _parse_graph(logits_arc, lengths)
-        rels = _decode_rels(logits_rel, arcs)
+        rels = _decode_rels(logits_rel, arcs) if logits_rel is not None else None
         return arcs, rels
 
     def compute_metrics(
