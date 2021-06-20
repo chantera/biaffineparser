@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import defaultdict
 from os import PathLike
 from typing import (
     Any,
@@ -38,27 +38,22 @@ class Preprocessor:
         preprocess: Optional[Callable[[str], str]] = str.lower,
         min_frequency: int = 2,
     ) -> None:
-        word_set, postag_set, deprel_set = set(), set(), set()
-        word_counter: Counter = Counter()
+        word_counter: Dict[str, int] = defaultdict(int)
+        postag_vocab = utils.data.Vocab(unknown)
+        deprel_vocab = utils.data.Vocab()
         for tokens in utils.conll.read_conll(file):
-            words, postags, deprels = zip(
-                *[
-                    (_apply(token["form"], preprocess), token["postag"], token["deprel"])
-                    for token in tokens
-                ]
-            )
-            word_counter.update(words)
-            postag_set.update(postags)
-            deprel_set.update(deprels)
-        for word, count in word_counter.most_common():
-            if count < min_frequency:
-                break
-            word_set.add(word)
+            for token in tokens:
+                word_counter[_apply(token["form"], preprocess)] += 1
+                postag_vocab(token["postag"])
+                deprel_vocab(token["deprel"])
+        word_iter = (k for k, v in word_counter.items() if v >= min_frequency)
+        postag_vocab.freeze()
+        deprel_vocab.freeze()
 
-        self.vocabs["word"] = utils.data.Vocab.fromkeys(word_set, unknown)
+        self.vocabs["word"] = utils.data.Vocab.fromkeys(word_iter, unknown)
         self.vocabs["word"].preprocess = preprocess
-        self.vocabs["postag"] = utils.data.Vocab.fromkeys(postag_set, unknown)
-        self.vocabs["deprel"] = utils.data.Vocab.fromkeys(deprel_set)
+        self.vocabs["postag"] = postag_vocab
+        self.vocabs["deprel"] = deprel_vocab
         if "pretrained_word" not in self.vocabs:
             self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys([], unknown)
 
