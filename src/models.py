@@ -15,7 +15,11 @@ def build_model(**kwargs) -> "BiaffineParser":
         for name in ["word", "pretrained_word", "postag"]
     ]
     if kwargs.get("pretrained_word_embeddings") is not None:
+        embeddings[0] = torch.zeros(embeddings[0])
         embeddings[1] = kwargs["pretrained_word_embeddings"]
+        std = torch.std(embeddings[1])
+        if std > 0:
+            embeddings[1] /= std
     dropout_ratio = kwargs.get("dropout", 0.33)
     encoder = BiLSTMEncoder(
         embeddings,
@@ -26,6 +30,7 @@ def build_model(**kwargs) -> "BiaffineParser":
         lstm_dropout=kwargs.get("lstm_dropout", dropout_ratio),
         recurrent_dropout=kwargs.get("recurrent_dropout", dropout_ratio),
     )
+    encoder.freeze_embedding(1)
     model = BiaffineParser(
         encoder,
         n_deprels=kwargs.get("n_deprels"),
@@ -261,7 +266,7 @@ class BiLSTMEncoder(Encoder):
                 size, dim = item
                 emb = nn.Embedding(size, dim)
             else:
-                emb = nn.Embedding.from_pretrained(item, freeze=True)
+                emb = nn.Embedding.from_pretrained(item, freeze=False)
             self.embeds.append(emb)
         self._reduce_embs = sorted(reduce_embeddings or [])
 
@@ -283,6 +288,14 @@ class BiLSTMEncoder(Encoder):
         self.embedding_dropout = EmbeddingDropout(embedding_dropout)
         self.lstm_dropout = nn.Dropout(lstm_dropout)
         self._hidden_size = lstm_hidden_size
+
+    def freeze_embedding(self, index: Optional[Union[int, Iterable[int]]] = None) -> None:
+        if index is None:
+            index = range(len(self.embeds))
+        elif isinstance(index, int):
+            index = [index]
+        for i in index:
+            self.embeds[i].weight.requires_grad = False
 
     def forward(self, *input_ids: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         if len(input_ids) != len(self.embeds):
