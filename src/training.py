@@ -7,7 +7,12 @@ import utils
 
 
 def create_trainer(model, **kwargs):
-    optimizer = torch.optim.Adam(model.parameters(), kwargs.pop("lr", 0.001), betas=(0.9, 0.9))
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        kwargs.pop("lr", 0.001),
+        betas=(0.9, 0.9),
+        eps=1e-12,
+    )
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.75 ** (step / 5000))
     kwargs.setdefault("max_grad_norm", 5.0)
     kwargs.setdefault("step", forward)
