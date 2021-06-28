@@ -86,7 +86,7 @@ class BiaffineParser(nn.Module):
         hs_head_in = self.mlp_head_in(hs)
         hs_head_out = self.mlp_head_out(hs)
         logits_head = self.biaf_head(hs_head_out, hs_head_in).squeeze_(3)  # outgoing -> incoming
-        mask = _mask_arc(lengths, mask_loop=not self.training)
+        mask = _mask_arc(lengths, mask_diag=not self.training)
         if mask is not None:
             logits_head.masked_fill_(mask.logical_not().to(logits_head.device), -float("inf"))
         logits_deprel = None
@@ -138,17 +138,17 @@ class BiaffineParser(nn.Module):
 
 
 @torch.no_grad()
-def _mask_arc(lengths: torch.Tensor, mask_loop: bool = True) -> Optional[torch.Tensor]:
+def _mask_arc(lengths: torch.Tensor, mask_diag: bool = True) -> Optional[torch.Tensor]:
     b, n = lengths.numel(), lengths.max()
     if torch.all(lengths == n):
-        if not mask_loop:
+        if not mask_diag:
             return None
         mask = torch.ones(b, n, n)
     else:
         mask = torch.zeros(b, n, n)
         for i, length in enumerate(lengths):
             mask[i, :length, :length] = 1
-    if mask_loop:
+    if mask_diag:
         mask.masked_fill_(torch.eye(n, dtype=torch.bool), 0)
     return mask
 
@@ -158,7 +158,7 @@ def _parse_graph(
     logits_head: torch.Tensor, lengths: torch.Tensor, mask: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     if mask is None:
-        mask = _mask_arc(lengths, mask_loop=True)
+        mask = _mask_arc(lengths, mask_diag=True)
     probs = (F.softmax(logits_head, dim=2) * mask.to(logits_head.device)).cpu().numpy()
     trees = torch.full((lengths.numel(), max(lengths)), -1)
     for i, length in enumerate(lengths):
