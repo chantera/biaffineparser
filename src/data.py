@@ -38,23 +38,25 @@ class Preprocessor:
         unknown: str = "<UNK>",
         preprocess: Optional[Callable[[str], str]] = str.lower,
         min_frequency: int = 2,
+        cache_dir: Optional[Union[str, bytes, PathLike]] = None,
     ) -> None:
-        word_counter: Dict[str, int] = defaultdict(int)
-        postag_vocab = utils.data.Vocab(unknown)
-        deprel_vocab = utils.data.Vocab()
-        for tokens in utils.conll.read_conll(file):
-            for token in tokens:
-                word_counter[_apply(token["form"], preprocess)] += 1
-                postag_vocab(token["postag"])
-                deprel_vocab(token["deprel"])
-        word_iter = (k for k, v in word_counter.items() if v >= min_frequency)
-        postag_vocab.freeze()
-        deprel_vocab.freeze()
+        def _build_vocabs(file):
+            word_counter: Dict[str, int] = defaultdict(int)
+            postag_vocab = utils.data.Vocab(unknown)
+            deprel_vocab = utils.data.Vocab()
+            for tokens in utils.conll.read_conll(file):
+                for token in tokens:
+                    word_counter[_apply(token["form"], preprocess)] += 1
+                    postag_vocab(token["postag"])
+                    deprel_vocab(token["deprel"])
+            word_iter = (k for k, v in word_counter.items() if v >= min_frequency)
+            word_vocab = utils.data.Vocab.fromkeys(word_iter, unknown)
+            word_vocab.preprocess = preprocess
+            postag_vocab.freeze()
+            deprel_vocab.freeze()
+            return {"word": word_vocab, "postag": postag_vocab, "deprel": deprel_vocab}
 
-        self.vocabs["word"] = utils.data.Vocab.fromkeys(word_iter, unknown)
-        self.vocabs["word"].preprocess = preprocess
-        self.vocabs["postag"] = postag_vocab
-        self.vocabs["deprel"] = deprel_vocab
+        self.vocabs.update(_wrap_cache(_build_vocabs, file, cache_dir, suffix=".vocab"))
         if "pretrained_word" not in self.vocabs:
             self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys([], unknown)
 
