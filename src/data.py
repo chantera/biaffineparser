@@ -1,5 +1,5 @@
 import os
-from collections import defaultdict
+from collections import UserList, defaultdict
 from os import PathLike
 from typing import (
     Any,
@@ -9,6 +9,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    MutableSequence,
     Optional,
     Sequence,
     Tuple,
@@ -138,9 +139,12 @@ def create_dataloader(
     file: Union[str, bytes, PathLike],
     preprocessor: Preprocessor,
     device: Optional[torch.device] = None,
+    cache_dir: Optional[Union[str, bytes, PathLike]] = None,
     **kwargs,
 ) -> torch.utils.data.DataLoader:
-    dataset = ListDataset(map(preprocessor.transform, utils.conll.read_conll(file)))
+    dataset = _wrap_cache(
+        lambda f: Dataset(map(preprocessor.transform, utils.conll.read_conll(f))), file, cache_dir
+    )
     if kwargs.get("batch_sampler") is None:
         kwargs["batch_sampler"] = BucketSampler(
             dataset,
@@ -155,8 +159,15 @@ def create_dataloader(
     return loader
 
 
-class ListDataset(list, torch.utils.data.Dataset):
-    pass
+class Dataset(UserList, MutableSequence[Sequence[torch.Tensor]], torch.utils.data.Dataset):
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        state["data"] = [tuple(attr.tolist() for attr in item) for item in state["data"]]
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self.data = [tuple(torch.tensor(attr) for attr in item) for item in self.data]
 
 
 class BucketSampler(torch.utils.data.Sampler[List[int]]):
