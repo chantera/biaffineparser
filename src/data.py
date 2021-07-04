@@ -76,13 +76,18 @@ class Preprocessor:
                 vocab.append(token)
                 embeddings = torch.vstack((embeddings, torch.zeros_like(embeddings[0])))
 
-        vocab, embeddings = _wrap_cache(_load_embeddings, file, cache_dir)
+        vocab, embeddings = _wrap_cache(self._load_embeddings, file, cache_dir)
         _add_entry(_apply("<ROOT>", preprocess))
         _add_entry(unknown)
         self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys(vocab, unknown)
         self.vocabs["pretrained_word"].preprocess = preprocess
         self._embeddings = embeddings
         self._embed_file = file
+
+    @staticmethod
+    def _load_embeddings(file) -> Tuple[List[str], torch.Tensor]:
+        embeddings = utils.data.load_embeddings(file)
+        return (list(embeddings.keys()), torch.tensor(list(embeddings.values())))
 
     def transform(
         self, tokens: Iterable[Dict[str, Any]]
@@ -113,11 +118,6 @@ class Preprocessor:
             self.load_embeddings(self._embed_file, v.lookup(v.unknown_id), v.preprocess)
             assert len(self.vocabs["pretrained_word"]) == len(v)
         return self._embeddings
-
-
-def _load_embeddings(file):
-    embeddings = utils.data.load_embeddings(file)
-    return (list(embeddings.keys()), torch.tensor(list(embeddings.values())))
 
 
 def _wrap_cache(load_fn, file, cache_dir=None, suffix=".cache"):
