@@ -29,7 +29,7 @@ class Preprocessor:
 
     def __init__(self):
         self.vocabs: Dict[str, utils.data.Vocab] = {}
-        self._embeddings: Optional[List[List[float]]] = None
+        self._embeddings: Optional[torch.Tensor] = None
         self._embed_file: Optional[Union[str, bytes, PathLike]] = None
 
     def build_vocab(
@@ -76,20 +76,23 @@ class Preprocessor:
         _add_entry(unknown)
         self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys(vocab, unknown)
         self.vocabs["pretrained_word"].preprocess = preprocess
-        self._embeddings = embeddings.tolist()
+        self._embeddings = embeddings
         self._embed_file = file
 
     def transform(
         self, tokens: Iterable[Dict[str, Any]]
-    ) -> Tuple[List[int], List[int], List[int], List[int], List[int]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         words, postags, heads, deprels = zip(
             *[(token["form"], token["postag"], token["head"], token["deprel"]) for token in tokens]
         )
-        word_ids = [self.vocabs["word"][s] for s in words]
-        pre_ids = [self.vocabs["pretrained_word"][s] for s in words]
-        postag_ids = [self.vocabs["postag"][s] for s in postags]
-        deprel_ids = [self.vocabs["deprel"][s] for s in deprels]
-        return (word_ids, pre_ids, postag_ids, list(heads), deprel_ids)
+        sample = (
+            torch.tensor([self.vocabs["word"][s] for s in words]),
+            torch.tensor([self.vocabs["pretrained_word"][s] for s in words]),
+            torch.tensor([self.vocabs["postag"][s] for s in postags]),
+            torch.tensor(heads),
+            torch.tensor([self.vocabs["deprel"][s] for s in deprels]),
+        )
+        return sample
 
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
@@ -98,7 +101,7 @@ class Preprocessor:
         return state
 
     @property
-    def pretrained_word_embeddings(self) -> Optional[List[List[float]]]:
+    def pretrained_word_embeddings(self) -> Optional[torch.Tensor]:
         if self._embeddings is None and self._embed_file is not None:
             v = self.vocabs["pretrained_word"]
             assert v.unknown_id is not None
@@ -207,7 +210,8 @@ class BucketSampler(torch.utils.data.Sampler[List[int]]):
 
 
 def collate(
-    batch: Iterable[Sequence[Any]], device: Optional[torch.device] = None
+    batch: Iterable[Sequence[torch.Tensor]], device: Optional[torch.device] = None
 ) -> List[torch.Tensor]:
-    batch = ([torch.tensor(col, device=device) for col in row] for row in batch)
+    if device is not None:
+        batch = ([col.to(device) for col in row] for row in batch)
     return [list(field) for field in zip(*batch)]

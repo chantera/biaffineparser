@@ -67,14 +67,11 @@ def train(args):
     if args.eval_file:
         eval_dataloader = create_dataloader(args.eval_file, **loader_config, shuffle=False)
 
-    word_embeddings = preprocessor.pretrained_word_embeddings
-    if word_embeddings is not None:
-        word_embeddings = torch.tensor(word_embeddings)
     model_config = dict(
         word_vocab_size=len(preprocessor.vocabs["word"]),
         pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
-        pretrained_word_embeddings=word_embeddings,
+        pretrained_word_embeddings=preprocessor.pretrained_word_embeddings,
         n_deprels=len(preprocessor.vocabs["deprel"]),
     )
     model = build_model(**model_config)
