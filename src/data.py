@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 from os import PathLike
 from typing import (
@@ -62,15 +63,20 @@ class Preprocessor:
         file: Union[str, bytes, PathLike],
         unknown: str = "<UNK>",
         preprocess: Optional[Callable[[str], str]] = str.lower,
+        cache_dir: Optional[Union[str, bytes, PathLike]] = None,
     ) -> None:
-        embeddings = utils.data.load_embeddings(file)
-        dim = len(next(iter(embeddings.values())))
-        embeddings[_apply("<ROOT>", preprocess)] = [0.0] * dim
-        if unknown not in embeddings:
-            embeddings[unknown] = [0.0] * dim
-        self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys(embeddings.keys(), unknown)
+        def _add_entry(token):
+            if token not in vocab:
+                nonlocal embeddings
+                vocab.append(token)
+                embeddings = torch.vstack((embeddings, torch.zeros_like(embeddings[0])))
+
+        vocab, embeddings = _wrap_cache(_load_embeddings, file, cache_dir)
+        _add_entry(_apply("<ROOT>", preprocess))
+        _add_entry(unknown)
+        self.vocabs["pretrained_word"] = utils.data.Vocab.fromkeys(vocab, unknown)
         self.vocabs["pretrained_word"].preprocess = preprocess
-        self._embeddings = list(embeddings.values())
+        self._embeddings = embeddings.tolist()
         self._embed_file = file
 
     def transform(
@@ -99,6 +105,28 @@ class Preprocessor:
             self.load_embeddings(self._embed_file, v.lookup(v.unknown_id), v.preprocess)
             assert len(self.vocabs["pretrained_word"]) == len(v)
         return self._embeddings
+
+
+def _load_embeddings(file):
+    embeddings = utils.data.load_embeddings(file)
+    return (list(embeddings.keys()), torch.tensor(list(embeddings.values())))
+
+
+def _wrap_cache(load_fn, file, cache_dir=None, suffix=".cache"):
+    if cache_dir is None:
+        return load_fn(file)
+
+    basename = os.path.basename(file)
+    if not basename:
+        raise ValueError(f"Invalid filename: '{file}'")
+    cache_file = os.path.join(cache_dir, f"{basename}{suffix}")
+
+    if os.path.exists(cache_file):
+        obj = torch.load(cache_file)
+    else:
+        obj = load_fn(file)
+        torch.save(obj, cache_file)
+    return obj
 
 
 def create_dataloader(
