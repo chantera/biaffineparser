@@ -31,6 +31,7 @@ def main():
     subparser.add_argument("--learning_rate", "--lr", type=float, default=2e-3, metavar="VALUE")
     subparser.add_argument("--cuda", action="store_true")
     subparser.add_argument("--save_dir", type=str, default=None, metavar="DIR")
+    subparser.add_argument("--cache_dir", type=str, default=None, metavar="DIR")
     subparser.add_argument("--seed", type=int, default=None, metavar="VALUE")
 
     subparser = subparsers.add_parser("evaluate")
@@ -54,13 +55,14 @@ def train(args):
     device = torch.device("cuda" if args.cuda else "cpu")
 
     preprocessor = Preprocessor()
-    preprocessor.build_vocab(args.train_file)
+    preprocessor.build_vocab(args.train_file, cache_dir=args.cache_dir)
     if args.embed_file:
-        preprocessor.load_embeddings(args.embed_file)
+        preprocessor.load_embeddings(args.embed_file, cache_dir=args.cache_dir)
     loader_config = dict(
         preprocessor=preprocessor,
         batch_size=args.batch_size,
         device=device,
+        cache_dir=args.cache_dir,
     )
     train_dataloader = create_dataloader(args.train_file, **loader_config, shuffle=True)
     eval_dataloader = None
