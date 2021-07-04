@@ -1,6 +1,5 @@
 import os
 from collections import UserList, defaultdict
-from os import PathLike
 from typing import (
     Any,
     Callable,
@@ -13,12 +12,15 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypeVar,
     Union,
 )
 
 import torch
 
 import utils
+
+T = TypeVar("T")
 
 
 def _apply(s: str, f: Optional[Callable[[str], str]]) -> str:
@@ -31,15 +33,15 @@ class Preprocessor:
     def __init__(self):
         self.vocabs: Dict[str, utils.data.Vocab] = {}
         self._embeddings: Optional[torch.Tensor] = None
-        self._embed_file: Optional[Union[str, bytes, PathLike]] = None
+        self._embed_file: Optional[Union[str, bytes, os.PathLike]] = None
 
     def build_vocab(
         self,
-        file: Union[str, bytes, PathLike],
+        file: Union[str, bytes, os.PathLike],
         unknown: str = "<UNK>",
         preprocess: Optional[Callable[[str], str]] = str.lower,
         min_frequency: int = 2,
-        cache_dir: Optional[Union[str, bytes, PathLike]] = None,
+        cache_dir: Optional[Union[str, bytes, os.PathLike]] = None,
     ) -> None:
         def _build_vocabs(file):
             word_counter: Dict[str, int] = defaultdict(int)
@@ -63,10 +65,10 @@ class Preprocessor:
 
     def load_embeddings(
         self,
-        file: Union[str, bytes, PathLike],
+        file: Union[str, bytes, os.PathLike],
         unknown: str = "<UNK>",
         preprocess: Optional[Callable[[str], str]] = str.lower,
-        cache_dir: Optional[Union[str, bytes, PathLike]] = None,
+        cache_dir: Optional[Union[str, bytes, os.PathLike]] = None,
     ) -> None:
         def _add_entry(token):
             if token not in vocab:
@@ -136,10 +138,10 @@ def _wrap_cache(load_fn, file, cache_dir=None, suffix=".cache"):
 
 
 def create_dataloader(
-    file: Union[str, bytes, PathLike],
+    file: Union[str, bytes, os.PathLike],
     preprocessor: Preprocessor,
     device: Optional[torch.device] = None,
-    cache_dir: Optional[Union[str, bytes, PathLike]] = None,
+    cache_dir: Optional[Union[str, bytes, os.PathLike]] = None,
     **kwargs,
 ) -> torch.utils.data.DataLoader:
     dataset = _wrap_cache(
@@ -159,7 +161,15 @@ def create_dataloader(
     return loader
 
 
-class Dataset(UserList, MutableSequence[Sequence[torch.Tensor]], torch.utils.data.Dataset):
+class _UserList(UserList, MutableSequence[T]):
+    pass
+
+
+class ListDataset(_UserList[T], torch.utils.data.Dataset):
+    pass
+
+
+class Dataset(ListDataset[Sequence[torch.Tensor]]):
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
         state["data"] = [tuple(attr.tolist() for attr in item) for item in state["data"]]

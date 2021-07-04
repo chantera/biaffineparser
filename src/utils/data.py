@@ -15,6 +15,8 @@ from typing import (
 )
 
 T = TypeVar("T")
+KT = TypeVar("KT")
+VT = TypeVar("VT")
 
 TEnumerizer = TypeVar("TEnumerizer", bound="Enumerizer")
 
@@ -74,7 +76,11 @@ class Enumerizer(Collection[T]):
 Vocab = Enumerizer[str]
 
 
-class IndexMapping(UserDict, MutableMapping[T, int]):
+class _UserDict(UserDict, MutableMapping[KT, VT]):
+    pass
+
+
+class IndexMapping(_UserDict[T, int]):
     def __init__(self):
         super().__init__()
         self.increment: bool = True
