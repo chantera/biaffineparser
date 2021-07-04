@@ -69,14 +69,13 @@ def train(args):
     if args.eval_file:
         eval_dataloader = create_dataloader(args.eval_file, **loader_config, shuffle=False)
 
-    model_config = dict(
+    model = build_model(
         word_vocab_size=len(preprocessor.vocabs["word"]),
         pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
         pretrained_word_embeddings=preprocessor.pretrained_word_embeddings,
         n_deprels=len(preprocessor.vocabs["deprel"]),
     )
-    model = build_model(**model_config)
     model.to(device)
 
     trainer = create_trainer(
@@ -107,13 +106,12 @@ def evaluate(args):
     eval_dataloader = create_dataloader(args.eval_file, **loader_config, shuffle=False)
 
     checkpoint = torch.load(args.checkpoint_file)
-    model_config = dict(
+    model = build_model(
         word_vocab_size=len(preprocessor.vocabs["word"]),
         pretrained_word_vocab_size=len(preprocessor.vocabs["pretrained_word"]),
         postag_vocab_size=len(preprocessor.vocabs["postag"]),
         n_deprels=len(preprocessor.vocabs["deprel"]),
     )
-    model = build_model(**model_config)
     model.load_state_dict(checkpoint["model"])
     model.to(device)
 
