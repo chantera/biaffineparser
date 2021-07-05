@@ -329,7 +329,7 @@ class EmbeddingDropout(nn.Module):
 
     def forward(self, xs: Sequence[torch.Tensor]) -> List[torch.Tensor]:
         """Drop embeddings with scaling.
-        https://github.com/tdozat/Parser-v2/blob/304c638aa780a5591648ef27060cfa7e4bee2bd0/parser/neural/models/nn.py#L50  # NOQA
+        https://github.com/tdozat/Parser-v2/blob/304c638aa780a5591648ef27060cfa7e4bee2bd0/parser/neural/models/nn.py#L50  # noqa
         """
         if not self.training or self.p == 0.0:
             return list(xs)
@@ -411,7 +411,7 @@ class Biaffine(nn.Module):
 
 class PairwiseBilinear(nn.Module):
     """
-    https://github.com/stanfordnlp/stanza/blob/v1.1.1/stanza/models/common/biaffine.py#L5  # NOQA
+    https://github.com/stanfordnlp/stanza/blob/v1.1.1/stanza/models/common/biaffine.py#L5  # noqa
     """
 
     def __init__(self, in1_features: int, in2_features: int, out_features: int, bias: bool = True):
