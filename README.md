@@ -35,9 +35,9 @@ usage: main.py evaluate [-h] --eval_file FILE --checkpoint_file FILE
 ## Example
 
 ```sh
-mkdir models
-python3 src/main.py train --train_file $DATA/train.conll --eval_file $DATA/dev.conll --embed_file $DATA/glove.6B.100d.txt --cuda --save_dir ./models
-python3 src/main.py evaluate --eval_file $DATA/test.conll --ckpt ./models/step-[num].ckpt --proc ./models/preprocessor.pt --cuda
+$ mkdir models
+$ python3 src/main.py train --train_file $DATA/train.conll --eval_file $DATA/dev.conll --embed_file $DATA/glove.6B.100d.txt --cuda --save_dir ./models
+$ python3 src/main.py evaluate --eval_file $DATA/test.conll --ckpt ./models/step-[num].ckpt --proc ./models/preprocessor.pt --cuda
 ```
 
 ### Performance
