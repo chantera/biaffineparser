@@ -354,6 +354,8 @@ class LSTM(nn.LSTM):
 
     def forward(self, input, hx=None):
         if not self.training or self.recurrent_dropout == 0.0:
+            if id(self._flat_weights) != self._flat_weights_id:
+                self.flatten_parameters()
             return super().forward(input, hx)
         __flat_weights = self._flat_weights
         p = self.recurrent_dropout
@@ -365,6 +367,10 @@ class LSTM(nn.LSTM):
         ret = super().forward(input, hx)
         self._flat_weights = __flat_weights
         return ret
+
+    def flatten_parameters(self) -> None:
+        super().flatten_parameters()
+        self._flat_weights_id = id(self._flat_weights)
 
 
 class MLP(nn.Sequential):
