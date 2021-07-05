@@ -1,6 +1,6 @@
 import math
 from functools import partial
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -304,12 +304,12 @@ class BiLSTMEncoder(Encoder):
         xs = [emb(torch.cat(ids_each, dim=0)) for emb, ids_each in zip(self.embeds, input_ids)]
         if len(self._reduce_embs) > 1:
             xs += [torch.sum(torch.stack([xs.pop(i) for i in reversed(self._reduce_embs)]), dim=0)]
-        seq = self.lstm_dropout(self.embedding_dropout(torch.stack(xs, dim=1)))  # (B * n, emb, d)
+        seq = self.lstm_dropout(torch.cat(self.embedding_dropout(xs), dim=-1))  # (B * n, d)
 
         if torch.all(lengths == lengths[0]):
             hs, _ = self.bilstm(seq.view(len(lengths), lengths[0], -1))
         else:
-            seq = torch.split(seq.view(seq.size(0), -1), tuple(lengths), dim=0)
+            seq = torch.split(seq, tuple(lengths), dim=0)
             seq = nn.utils.rnn.pack_sequence(seq, enforce_sorted=False)
             hs, _ = self.bilstm(seq)
             hs, _ = nn.utils.rnn.pad_packed_sequence(hs, batch_first=True)
@@ -327,17 +327,17 @@ class EmbeddingDropout(nn.Module):
             raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
         self.p = p
 
-    def forward(self, xs: torch.Tensor) -> torch.Tensor:
+    def forward(self, xs: Sequence[torch.Tensor]) -> List[torch.Tensor]:
         """Drop embeddings with scaling.
         https://github.com/tdozat/Parser-v2/blob/304c638aa780a5591648ef27060cfa7e4bee2bd0/parser/neural/models/nn.py#L50  # NOQA
         """
         if not self.training or self.p == 0.0:
-            return xs
+            return list(xs)
         with torch.no_grad():
-            mask = torch.rand(xs.size()[:-1], device=xs.device) >= self.p  # (..., n_channels)
-            scale = mask.size(-1) / torch.clamp(mask.sum(dim=-1, keepdims=True), min=1.0)
-            mask = (mask * scale)[..., None]
-        return xs * mask
+            masks = torch.rand((len(xs),) + xs[0].size()[:-1], device=xs[0].device) >= self.p
+            scale = masks.size(0) / torch.clamp(masks.sum(dim=0, keepdims=True), min=1.0)
+            masks = (masks * scale)[..., None]
+        return [x * mask for x, mask in zip(xs, masks)]
 
     def extra_repr(self) -> str:
         return f"p={self.p}"
