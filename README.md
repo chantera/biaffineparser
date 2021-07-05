@@ -4,7 +4,7 @@ biaffineparser is a PyTorch implementation of "[Deep Biaffine Attention for Neur
 
 ## Installation
 
-biaffineparser works on Python3 and requires torch, numpy, tqdm, and teras.
+biaffineparser works on PyTorch.
 
 ```sh
 $ git clone https://github.com/chantera/biaffineparser
@@ -17,51 +17,32 @@ $ pip install -r requirements.txt
 ### Training
 
 ```sh
-usage: main.py train [-h] [--batchsize NUM] [--cachedir DIR] [--devfile FILE]
-                     [--device ID] [--embedfile FILE] [--epoch NUM]
-                     [--lr VALUE] [--model KEY=VALUE] [--refresh]
-                     [--savedir DIR] [--seed VALUE] --trainfile FILE
-
-optional arguments:
-  -h, --help         show this help message and exit
-  --batchsize NUM    Number of tokens in each mini-batch (default: 5000)
-  --cachedir DIR     Cache directory (default: /root/work/host-work/repos/gith
-                     ub.com/chantera/biaffineparser/src/../cache)
-  --devfile FILE     Development data file (default: None)
-  --device ID        Device ID (negative value indicates CPU) (default: -1)
-  --embedfile FILE   Pretrained word embedding file (default: None)
-  --epoch NUM        Number of sweeps over the dataset to train (default: 300)
-  --lr VALUE         Learning rate (default: 0.002)
-  --model KEY=VALUE  Model configuration (default: None)
-  --refresh, -r      Refresh cache. (default: False)
-  --savedir DIR      Directory to save the model (default: None)
-  --seed VALUE       Random seed (default: None)
-  --trainfile FILE   Training data file. (default: None)
+usage: main.py train [-h] --train_file FILE [--eval_file FILE]
+                     [--embed_file FILE] [--max_steps NUM]
+                     [--eval_interval NUM] [--batch_size NUM]
+                     [--learning_rate VALUE] [--cuda] [--save_dir DIR]
+                     [--cache_dir DIR] [--seed VALUE]
 ```
 
-### Testing
+### Evaluation
 
 ```sh
-usage: main.py test [-h] [--device ID] --modelfile FILE --testfile FILE
-
-optional arguments:
-  -h, --help        show this help message and exit
-  --device ID       Device ID (negative value indicates CPU) (default: -1)
-  --modelfile FILE  Trained model file (default: None)
-  --testfile FILE   Test data file (default: None)
+usage: main.py evaluate [-h] --eval_file FILE --checkpoint_file FILE
+                        --preprocessor_file FILE [--batch_size NUM] [--cuda]
+                        [--verbose]
 ```
 
 ## Example
 
 ```sh
 mkdir models
-python3 src/main.py train --trainfile=$DATA/train.conll --devfile=$DATA/dev.conll --embedfile=$DATA/glove.6B.100d.txt --device=0 --savedir=./models --seed=2016
-python3 src/main.py test --testfile=$DATA/test.conll --modelfile=./models/[yyyymmdd]-[id].npz --device=0
+python3 src/main.py train --train_file $DATA/train.conll --eval_file $DATA/dev.conll --embed_file $DATA/glove.6B.100d.txt --cuda --save_dir ./models
+python3 src/main.py evaluate --eval_file $DATA/test.conll --ckpt ./models/step-[num].ckpt --proc ./models/preprocessor.pt --cuda
 ```
 
 ### Performance
 
-The model achieves **UAS: 95.80** and **LAS: 94.13** in wsj 23 (test set) in PTB-SD 3.3.0 with the reported hyperparameters.
+The model achieves **UAS: 95.77** and **LAS: 94.10** in wsj 23 (test set) in PTB-SD 3.3.0 with the reported hyperparameters.
 
 ## References
 
@@ -71,5 +52,5 @@ License
 ----
 Apache License Version 2.0
 
-&copy; Copyright 2019 Teranishi Hiroki
+&copy; Copyright 2021 Hiroki Teranishi
 
