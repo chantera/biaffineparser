@@ -86,7 +86,7 @@ class BiaffineParser(nn.Module):
         hs_head_in = self.mlp_head_in(hs)
         hs_head_out = self.mlp_head_out(hs)
         logits_head = self.biaf_head(hs_head_out, hs_head_in).squeeze_(3)  # outgoing -> incoming
-        mask = _mask_arc(lengths, mask_diag=not self.training)
+        mask = _mask_arc(lengths, mask_diag=False)
         if mask is not None:
             logits_head.masked_fill_(mask.logical_not().to(logits_head.device), -float("inf"))
         logits_deprel = None
