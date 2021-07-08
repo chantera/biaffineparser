@@ -1,5 +1,3 @@
-chainer==5.2.0
-numpy>=1.11.0
+torch>=1.3.0
+numpy
 tqdm
--e git+https://github.com/chantera/chainer_nn@v0.1.0#egg=chainer_nn
--e git+https://github.com/chantera/teras@v0.3.0#egg=teras

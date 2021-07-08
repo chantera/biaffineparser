@@ -1,7 +1,9 @@
-# https://github.com/stanfordnlp/stanfordnlp/blob/d8061501ff14c73734e834a08fa33c58c4a6d917/stanfordnlp/models/common/chuliu_edmonds.py  #NOQA
-# Adapted from Tim's code here: https://github.com/tdozat/Parser-v3/blob/master/scripts/chuliu_edmonds.py
+# https://github.com/stanfordnlp/stanza/blob/v1.1.1/stanza/models/common/chuliu_edmonds.py # noqa
+
+# fmt: off
 
 import numpy as np
+
 
 def tarjan(tree):
     """"""
