@@ -28,8 +28,8 @@ usage: main.py train [-h] --train_file FILE [--eval_file FILE]
 
 ```sh
 usage: main.py evaluate [-h] --eval_file FILE --checkpoint_file FILE
-                        --preprocessor_file FILE [--batch_size NUM] [--cuda]
-                        [--verbose]
+                        --preprocessor_file FILE [--output_file FILE]
+                        [--batch_size NUM] [--cuda] [--verbose]
 ```
 
 ## Example
