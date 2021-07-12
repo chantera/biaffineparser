@@ -53,9 +53,10 @@ class ProgressCallback(utils.training.ProgressCallback):
 class EvaluateCallback(utils.training.Callback):
     printer = tqdm.write
 
-    def __init__(self, gold_file, deprel_map, verbose=False):
+    def __init__(self, gold_file, deprel_map, output_file=None, verbose=False):
         self.gold_file = gold_file
         self.deprel_map = deprel_map
+        self.output_file = output_file
         self.verbose = verbose
         self.result = {}
         self._outputs = []
@@ -79,7 +80,11 @@ class EvaluateCallback(utils.training.Callback):
         if context.train:
             metrics.update({"train/UAS": float("nan"), "train/LAS": float("nan")})
             return
-        with NamedTemporaryFile(mode="w") as f:
+
+        def _open(file, mode="w"):
+            return open(file, mode) if file is not None else NamedTemporaryFile(mode)
+
+        with _open(self.output_file) as f:
             utils.conll.dump_conll(self._yield_prediction(), f)
             self.result.update(utils.conll.evaluate(self.gold_file, f.name, self.verbose))
         metrics.update({"eval/UAS": self.result["UAS"], "eval/LAS": self.result["LAS"]})

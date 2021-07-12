@@ -41,6 +41,7 @@ def main():
     subparser.add_argument(
         "--preprocessor_file", "--proc", type=str, required=True, metavar="FILE"
     )
+    subparser.add_argument("--output_file", type=str, metavar="FILE")
     subparser.add_argument("--batch_size", type=int, default=5000, metavar="NUM")
     subparser.add_argument("--cuda", action="store_true")
     subparser.add_argument("--verbose", "-v", action="store_true")
@@ -118,7 +119,9 @@ def evaluate(args):
     trainer = create_trainer(model)
     trainer.add_callback(utils.training.PrintCallback(printer=logger.info))
     deprel_map = {v: k for k, v in preprocessor.vocabs["deprel"].mapping.items()}
-    trainer.add_callback(EvaluateCallback(args.eval_file, deprel_map, args.verbose), priority=0)
+    trainer.add_callback(
+        EvaluateCallback(args.eval_file, deprel_map, args.output_file, args.verbose), priority=0
+    )
     with logging_redirect_tqdm(loggers=[logger]):
         trainer.evaluate(eval_dataloader)
 
