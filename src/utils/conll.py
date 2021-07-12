@@ -2,6 +2,8 @@ import os
 import subprocess
 import sys
 
+import utils.conll18_ud_eval as ud_eval
+
 
 def read_conll(file):
     with open(file) as f:
@@ -33,6 +35,8 @@ def parse_conll(lines):
             continue
         else:
             cols = line.split("\t")
+            if "." in cols[0]:  # skip empty node
+                continue
             token = {
                 "id": int(cols[0]),
                 "form": cols[1],
@@ -55,6 +59,8 @@ def write_conll(file, docs):
 
 def dump_conll(docs, writer=sys.stdout):
     attrs = ["id", "form", "lemma", "cpostag", "postag", "feats", "head", "deprel"]
+    if len(attrs) < 10:
+        attrs += [None] * (10 - len(attrs))
     for tokens in docs:
         for token in tokens:
             if token["id"] == 0:
@@ -69,15 +75,22 @@ _EVAL_SCRIPT = os.path.join(os.path.abspath(os.path.dirname(__file__)), "eval.pl
 
 
 def evaluate(gold_file, system_file, verbose=False):
-    command = ["/usr/bin/perl", _EVAL_SCRIPT, "-g", gold_file, "-s", system_file]
-    if not verbose:
-        command.append("-q")
-    option = {}
-    p = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **option)
-    output = (p.stdout if p.returncode == 0 else p.stderr).decode("utf-8")
-    if p.returncode != 0:
-        error = p.stderr.decode("utf-8")
-        raise RuntimeError("code={!r}, message={!r}".format(p.returncode, error))
-    output = p.stdout.decode("utf-8")
-    scores = [float(line.rsplit(" ", 2)[-2]) for line in output.split("\n", 2)[:2]]
-    return dict(LAS=scores[0], UAS=scores[1], raw=output)
+    if gold_file.endswith(".conllu"):
+        gold_ud = ud_eval.load_conllu_file(gold_file)
+        system_ud = ud_eval.load_conllu_file(system_file)
+        evaluation = ud_eval.evaluate(gold_ud, system_ud)
+        output = ud_eval.build_evaluation_table(evaluation, verbose, counts=False)
+        return dict(LAS=evaluation["LAS"].f1, UAS=evaluation["UAS"].f1, raw=output)
+    else:
+        command = ["/usr/bin/perl", _EVAL_SCRIPT, "-g", gold_file, "-s", system_file]
+        if not verbose:
+            command.append("-q")
+        option = {}
+        p = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **option)
+        output = (p.stdout if p.returncode == 0 else p.stderr).decode("utf-8")
+        if p.returncode != 0:
+            error = p.stderr.decode("utf-8")
+            raise RuntimeError("code={!r}, message={!r}".format(p.returncode, error))
+        output = p.stdout.decode("utf-8")
+        scores = [float(line.rsplit(" ", 2)[-2]) for line in output.split("\n", 2)[:2]]
+        return dict(LAS=scores[0], UAS=scores[1], raw=output)
